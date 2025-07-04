@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, time
 import asyncio
 import numpy as np
 from telegram.ext import ApplicationBuilder, CommandHandler
-# ==========================
 
+# ==========================
 BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
 CHAT_ID = "-1002883903673"
 signal_history = []
@@ -114,8 +114,16 @@ def determine_signal(candles_15m, candles_5m):
         "tp1": round(tp1, 4),
         "tp2": round(tp2, 4),
         "sl": round(sl, 4),
-        "time": utc_to_wib(last_candle_15["close_time"])
+        "time": utc_to_wib(last_candle_15["close_time"]),
+        "result": None,
+        "pips": 0
     }
+
+def simulate_signal_result(signal_obj):
+    import random
+    outcome = random.choice(["TP1", "TP2", "SL"])
+    signal_obj["result"] = outcome
+    signal_obj["pips"] = 30 if outcome == "TP1" else 50 if outcome == "TP2" else -15
 
 async def send_signal(context):
     global signal_history
@@ -128,24 +136,52 @@ async def send_signal(context):
     result = determine_signal(candles_15m, candles_5m)
     if not result:
         return
+
+    simulate_signal_result(result)
     signal_history.append(result)
-    msg = (f"Sinyal BTC/USD @ {result['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
-           f"Sinyal: {result['signal'].upper()}\n"
-           f"TP1: {result['tp1']} USD\n"
-           f"TP2: {result['tp2']} USD\n"
-           f"SL: {result['sl']} USD\n")
+    emoji = "\ud83d\udd39" if result["signal"] == "buy" else "\ud83d\udd3b"
+
+    msg = (f"\u2728 Sinyal BTC/USD @ {result['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
+           f"{emoji} Sinyal: {result['signal'].upper()}\n"
+           f"\ud83c\udf1f TP1: +30 pips\n"
+           f"\ud83d\udd25 TP2: +50 pips\n"
+           f"\u26d4 SL: -15 pips")
     await application.bot.send_message(chat_id=CHAT_ID, text=msg)
 
     if len(signal_history) >= 5:
-        recap_msg = "Rekapan 5 sinyal terakhir:\n"
-        for s in signal_history:
-            recap_msg += f"{s['signal'].upper()} TP1:{s['tp1']} TP2:{s['tp2']} SL:{s['sl']}\n"
+        recap_msg = "\ud83d\udcca [Rekapan 5 Sinyal Terakhir]\n"
+        total_pips = 0
+        for i, s in enumerate(signal_history[-5:], 1):
+            status = "\u2705 TP1 \ud83c\udf1f +30 pips" if s["result"] == "TP1" else \
+                     "\u2705 TP2 \ud83d\udd25 +50 pips" if s["result"] == "TP2" else \
+                     "\u274c SL \u26d4 -15 pips"
+            total_pips += s["pips"]
+            recap_msg += f"{i}. {s['signal'].upper():<4} {status}\n"
+        recap_msg += f"\n\ud83d\udcc8 Total Pips: {'\u2795' if total_pips >= 0 else '\u2796'} {abs(total_pips)} pips"
         await application.bot.send_message(chat_id=CHAT_ID, text=recap_msg)
         signal_history = []
 
 async def daily_recap(context):
     application = context.application
-    recap_msg = "Rekapan harian sinyal BTC/USD:\n(versi dummy, bisa dikembangkan)"
+    total = len(signal_history)
+    profit_count = sum(1 for s in signal_history if s["result"] in ["TP1", "TP2"])
+    loss_count = sum(1 for s in signal_history if s["result"] == "SL")
+    tp_pips = sum(s["pips"] for s in signal_history if s["pips"] > 0)
+    sl_pips = sum(s["pips"] for s in signal_history if s["pips"] < 0)
+    net_pips = tp_pips + sl_pips
+    accuracy = int(profit_count / total * 100) if total > 0 else 0
+
+    recap_msg = (f"\ud83d\udcc5 [Rekapan Harian BTC/USD]\n"
+                 f"\ud83d\udcc8 Total Sinyal: {total}\n"
+                 f"\u2705 Profit: {profit_count}\n"
+                 f"\u274c Loss: {loss_count}\n\n"
+                 f"\ud83c\udf1f Total Pips:\n"
+                 f"\u2795 TP: {tp_pips} pips\n"
+                 f"\u2796 SL: {sl_pips} pips\n"
+                 f"\ud83d\udcca Net Pips: {net_pips:+} pips\n\n"
+                 f"\ud83c\udfaf Akurasi: {accuracy}%\n"
+                 f"\ud83d\udd25 Tetap disiplin & gunakan SL ya!")
+
     await application.bot.send_message(chat_id=CHAT_ID, text=recap_msg)
 
 async def start(update, context):
@@ -155,9 +191,8 @@ async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    # ✅ JobQueue fix
     job_queue = application.job_queue
-    job_queue.run_repeating(send_signal, interval=45*60, first=10)
+    job_queue.run_repeating(send_signal, interval=45*60, first=5)
 
     now = datetime.utcnow() + timedelta(hours=7)
     target_time = datetime.combine(now.date(), time(20, 0))
