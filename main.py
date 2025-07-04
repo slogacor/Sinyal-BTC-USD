@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timedelta, time, timezone
 import asyncio
 import numpy as np
+import pandas as pd  
 from telegram.ext import ApplicationBuilder, CommandHandler
 
 BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
@@ -51,57 +52,42 @@ def calculate_rsi(prices, period=14):
         rsi[i] = 100. - 100. / (1. + rs)
     return rsi
 
-def bollinger_bands(prices, window=20, no_of_std=2):
+def bollinger_bands(prices, window=14, no_of_std=2):
     sma = np.convolve(prices, np.ones(window) / window, mode='valid')
     rolling_std = np.array([np.std(prices[i:i + window]) for i in range(len(prices) - window + 1)])
     upper_band = sma + no_of_std * rolling_std
     lower_band = sma - no_of_std * rolling_std
     return sma, upper_band, lower_band
 
-def analyze_candlestick(candle, prev_candle):
-    if (candle["close"] > candle["open"] and
-        prev_candle["close"] < prev_candle["open"] and
-        candle["open"] < prev_candle["close"] and
-        candle["close"] > prev_candle["open"]):
-        return "bullish"
-    if (candle["close"] < candle["open"] and
-        prev_candle["close"] > prev_candle["open"] and
-        candle["open"] > prev_candle["close"] and
-        candle["close"] < prev_candle["open"]):
-        return "bearish"
-    return "neutral"
+def calculate_ema(prices, period=20):
+    return np.array(pd.Series(prices).ewm(span=period, adjust=False).mean())
 
 def determine_signal(candles_5m):
     closes = np.array([c["close"] for c in candles_5m])
-    if len(closes) < 20:
-        return None
-    rsi = calculate_rsi(closes)[-1]
-    sma, upper, lower = bollinger_bands(closes)
-    if len(sma) == 0:
-        return None
-    last_candle = candles_5m[-1]
-    prev_candle = candles_5m[-2]
-    candle_pattern = analyze_candlestick(last_candle, prev_candle)
-    last_close = closes[-1]
-    upper_last = upper[-1]
-    lower_last = lower[-1]
-    signal = "neutral"
+    volumes = np.array([c["volume"] for c in candles_5m])
 
-    # PERLONGGAR kondisi RSI agar sinyal lebih sering muncul
-    if candle_pattern == "bullish" and rsi < 45 and last_close < lower_last:
+    if len(closes) < 30:
+        return None
+
+    rsi = calculate_rsi(closes)[-1]
+    sma, upper, lower = bollinger_bands(closes, window=14)
+    ema = calculate_ema(closes, period=20)
+    last_close = closes[-1]
+    last_volume = volumes[-1]
+    avg_volume = np.mean(volumes[-20:])
+    ema_trend = ema[-1]
+
+    # Validasi sinyal dengan kondisi longgar + EMA + volume breakout
+    signal = None
+    if last_close < lower[-1] and rsi < 65 and last_close > ema_trend and last_volume > avg_volume:
         signal = "buy"
-    elif candle_pattern == "bearish" and rsi > 55 and last_close > upper_last:
+    elif last_close > upper[-1] and rsi > 35 and last_close < ema_trend and last_volume > avg_volume:
         signal = "sell"
-    else:
-        if rsi < 40 and last_close < lower_last:
-            signal = "buy"
-        elif rsi > 60 and last_close > upper_last:
-            signal = "sell"
+
+    if not signal:
+        return None
 
     pip_size = 0.01
-    if signal not in ["buy", "sell"]:
-        return None
-
     entry_price = round(last_close, 2)
     tp1_price = round(entry_price + 30 * pip_size, 2) if signal == "buy" else round(entry_price - 30 * pip_size, 2)
     tp2_price = round(entry_price + 50 * pip_size, 2) if signal == "buy" else round(entry_price - 50 * pip_size, 2)
@@ -116,7 +102,7 @@ def determine_signal(candles_5m):
         "tp1": 30,
         "tp2": 50,
         "sl": 15,
-        "time": utc_to_wib(last_candle["close_time"]),
+        "time": utc_to_wib(candles_5m[-1]["close_time"]),
         "result": None,
         "pips": 0
     }
@@ -193,13 +179,12 @@ async def start(update, context):
     await update.message.reply_text("✅ Bot sinyal BTC/USD aktif!")
 
 async def main():
+    import pandas as pd
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    # ⏱️ Ubah ke deteksi sinyal setiap 10 detik
     application.job_queue.run_repeating(send_signal, interval=10, first=1)
 
-    # ⏰ Rekapan harian pukul 20:00 WIB
     now = datetime.now(timezone.utc) + timedelta(hours=7)
     target_time = datetime.combine(now.date(), time(20, 0)).replace(tzinfo=timezone(timedelta(hours=7)))
     if now > target_time:
@@ -212,5 +197,6 @@ async def main():
 
 if __name__ == "__main__":
     import nest_asyncio
+    import pandas as pd
     nest_asyncio.apply()
     asyncio.run(main())
