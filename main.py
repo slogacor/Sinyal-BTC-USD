@@ -1,7 +1,7 @@
 # ====== Tidak diubah ======
 import requests
 import logging
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 import asyncio
 import numpy as np
 from telegram.ext import ApplicationBuilder, CommandHandler
@@ -24,13 +24,13 @@ def fetch_klines(symbol, interval, limit=100):
     candles = []
     for d in data:
         candle = {
-            "open_time": datetime.utcfromtimestamp(d[0]/1000),
+            "open_time": datetime.fromtimestamp(d[0]/1000, timezone.utc),
             "open": float(d[1]),
             "high": float(d[2]),
             "low": float(d[3]),
             "close": float(d[4]),
             "volume": float(d[5]),
-            "close_time": datetime.utcfromtimestamp(d[6]/1000)
+            "close_time": datetime.fromtimestamp(d[6]/1000, timezone.utc)
         }
         candles.append(candle)
     return candles
@@ -194,7 +194,7 @@ async def main():
     job_queue = application.job_queue
     job_queue.run_repeating(send_signal, interval=45*60, first=5)
 
-    now = datetime.utcnow() + timedelta(hours=7)
+    now = datetime.now(timezone.utc) + timedelta(hours=7)
     target_time = datetime.combine(now.date(), time(20, 0))
     if now > target_time:
         target_time += timedelta(days=1)
