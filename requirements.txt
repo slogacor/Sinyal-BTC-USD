@@ -9,3 +9,6 @@ numpy==1.26.4
 
 # Nest Asyncio untuk jalankan asyncio di environment interaktif
 nest_asyncio==1.6.0
+
+# Pandas untuk analisis EMA dan volume
+pandas==2.2.2
