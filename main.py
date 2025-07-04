@@ -100,9 +100,13 @@ def detect_signal(candles):
 
     pip_size = 0.01 * 0.1  # Faktor pengali 0.1 sesuai permintaan
     entry = round(last_close, 2)
-    tp1 = round(entry + 30 * pip_size, 2) if signal == "buy" else round(entry - 30 * pip_size, 2)
-    tp2 = round(entry + 50 * pip_size, 2) if signal == "buy" else round(entry - 50 * pip_size, 2)
-    sl = round(entry - 15 * pip_size, 2) if signal == "buy" else round(entry + 15 * pip_size, 2)
+    tp1_pips = np.random.randint(25, 46)
+    tp2_pips = np.random.randint(40, 66)
+    sl_pips = np.random.randint(15, 26)
+
+    tp1 = round(entry + tp1_pips * pip_size, 2) if signal == "buy" else round(entry - tp1_pips * pip_size, 2)
+    tp2 = round(entry + tp2_pips * pip_size, 2) if signal == "buy" else round(entry - tp2_pips * pip_size, 2)
+    sl = round(entry - sl_pips * pip_size, 2) if signal == "buy" else round(entry + sl_pips * pip_size, 2)
 
     return {
         "signal": signal,
@@ -110,9 +114,9 @@ def detect_signal(candles):
         "tp1_price": tp1,
         "tp2_price": tp2,
         "sl_price": sl,
-        "tp1": 30,
-        "tp2": 50,
-        "sl": 15,
+        "tp1": tp1_pips,
+        "tp2": tp2_pips,
+        "sl": sl_pips,
         "time": utc_to_wib(candles[-1]["close_time"]),
         "result": None,
         "pips": 0
@@ -123,7 +127,7 @@ def simulate_result(sig):
     from random import choice
     result = choice(["TP1", "TP2", "SL"])
     sig["result"] = result
-    sig["pips"] = 30 if result == "TP1" else 50 if result == "TP2" else -15
+    sig["pips"] = sig["tp1"] if result == "TP1" else sig["tp2"] if result == "TP2" else -sig["sl"]
 
 
 async def send_signal(context):
@@ -146,9 +150,9 @@ async def send_signal(context):
         f"✨ Sinyal BTC/USD @ {signal['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
         f"{emoji} Sinyal: {signal['signal'].upper()}\n"
         f"💰 Entry: {signal['entry_price']}\n"
-        f"🌟 TP1: {signal['tp1_price']} (+30 pips)\n"
-        f"🔥 TP2: {signal['tp2_price']} (+50 pips)\n"
-        f"⛔ SL: {signal['sl_price']} (-15 pips)"
+        f"🌟 TP1: {signal['tp1_price']} (+{signal['tp1']} pips)\n"
+        f"🔥 TP2: {signal['tp2_price']} (+{signal['tp2']} pips)\n"
+        f"⛔ SL: {signal['sl_price']} (-{signal['sl']} pips)"
     )
     await app.bot.send_message(chat_id=CHAT_ID, text=msg)
 
@@ -156,7 +160,7 @@ async def send_signal(context):
         total_pips = 0
         recap = "📊 [Rekapan 5 Sinyal Terakhir]\n"
         for i, s in enumerate(signal_history[-5:], 1):
-            hasil = "✅ TP1 🌟 +30" if s["result"] == "TP1" else "✅ TP2 🔥 +50" if s["result"] == "TP2" else "❌ SL ⛔ -15"
+            hasil = f"✅ TP1 🌟 +{s['tp1']}" if s["result"] == "TP1" else f"✅ TP2 🔥 +{s['tp2']}" if s["result"] == "TP2" else f"❌ SL ⛔ -{s['sl']}"
             total_pips += s["pips"]
             recap += f"{i}. {s['signal'].upper():<4} {hasil} pips\n"
         recap += f"\n📈 Total Pips: {'➕' if total_pips >= 0 else '➖'} {abs(total_pips)} pips"
