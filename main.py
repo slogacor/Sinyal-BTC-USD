@@ -6,7 +6,7 @@ import numpy as np
 from telegram.ext import ApplicationBuilder, CommandHandler
 
 BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
-CHAT_ID = "-1002883903673"
+CHAT_ID = " -1002883903673"
 signal_history = []
 
 def utc_to_wib(utc_dt):
@@ -106,8 +106,18 @@ def determine_signal(candles_5m):
         sl = 15 * pip_size
     else:
         return None
+
+    entry_price = round(last_close, 2)
+    tp1_price = round(entry_price + tp1, 2) if signal == "buy" else round(entry_price - tp1, 2)
+    tp2_price = round(entry_price + tp2, 2) if signal == "buy" else round(entry_price - tp2, 2)
+    sl_price  = round(entry_price - sl, 2) if signal == "buy" else round(entry_price + sl, 2)
+
     return {
         "signal": signal,
+        "entry_price": entry_price,
+        "tp1_price": tp1_price,
+        "tp2_price": tp2_price,
+        "sl_price": sl_price,
         "tp1": round(tp1, 4),
         "tp2": round(tp2, 4),
         "sl": round(sl, 4),
@@ -137,11 +147,15 @@ async def send_signal(context):
     signal_history.append(result)
     emoji = "🔹" if result["signal"] == "buy" else "🔻"
 
-    msg = (f"✨ Sinyal BTC/USD @ {result['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
-           f"{emoji} Sinyal: {result['signal'].upper()}\n"
-           f"🌟 TP1: +30 pips\n"
-           f"🔥 TP2: +50 pips\n"
-           f"⛔ SL: -15 pips")
+    msg = (
+        f"✨ Sinyal BTC/USD @ {result['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
+        f"{emoji} Sinyal: {result['signal'].upper()}\n"
+        f"💰 Entry: {result['entry_price']}\n"
+        f"🌟 TP1: {result['tp1_price']} (+30 pips)\n"
+        f"🔥 TP2: {result['tp2_price']} (+50 pips)\n"
+        f"⛔ SL: {result['sl_price']} (-15 pips)"
+    )
+
     await application.bot.send_message(chat_id=CHAT_ID, text=msg)
 
     if len(signal_history) >= 5:
