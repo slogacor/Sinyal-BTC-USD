@@ -1,14 +1,6 @@
-# Telegram bot library with job queue support
 python-telegram-bot[job-queue]==20.7
-
-# HTTP requests
 requests==2.31.0
-
-# Numpy untuk perhitungan RSI, Bollinger Band
 numpy==1.26.4
-
-# Nest Asyncio untuk jalankan asyncio di environment interaktif
 nest_asyncio==1.6.0
-
-# Pandas untuk analisis EMA dan volume
 pandas==2.2.2
+flask==3.0.3
