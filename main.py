@@ -6,7 +6,7 @@ import numpy as np
 from telegram.ext import ApplicationBuilder, CommandHandler
 
 BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
-CHAT_ID = " -1002883903673"
+CHAT_ID = "-1002883903673"
 signal_history = []
 
 def utc_to_wib(utc_dt):
@@ -86,31 +86,26 @@ def determine_signal(candles_5m):
     upper_last = upper[-1]
     lower_last = lower[-1]
     signal = "neutral"
-    if candle_pattern == "bullish" and rsi < 40 and last_close < lower_last:
+
+    # PERLONGGAR kondisi RSI agar sinyal lebih sering muncul
+    if candle_pattern == "bullish" and rsi < 45 and last_close < lower_last:
         signal = "buy"
-    elif candle_pattern == "bearish" and rsi > 60 and last_close > upper_last:
+    elif candle_pattern == "bearish" and rsi > 55 and last_close > upper_last:
         signal = "sell"
     else:
-        if rsi < 30 and last_close < lower_last:
+        if rsi < 40 and last_close < lower_last:
             signal = "buy"
-        elif rsi > 70 and last_close > upper_last:
+        elif rsi > 60 and last_close > upper_last:
             signal = "sell"
+
     pip_size = 0.01
-    if signal == "buy":
-        tp1 = 30 * pip_size
-        tp2 = 50 * pip_size
-        sl = 15 * pip_size
-    elif signal == "sell":
-        tp1 = 30 * pip_size
-        tp2 = 50 * pip_size
-        sl = 15 * pip_size
-    else:
+    if signal not in ["buy", "sell"]:
         return None
 
     entry_price = round(last_close, 2)
-    tp1_price = round(entry_price + tp1, 2) if signal == "buy" else round(entry_price - tp1, 2)
-    tp2_price = round(entry_price + tp2, 2) if signal == "buy" else round(entry_price - tp2, 2)
-    sl_price  = round(entry_price - sl, 2) if signal == "buy" else round(entry_price + sl, 2)
+    tp1_price = round(entry_price + 30 * pip_size, 2) if signal == "buy" else round(entry_price - 30 * pip_size, 2)
+    tp2_price = round(entry_price + 50 * pip_size, 2) if signal == "buy" else round(entry_price - 50 * pip_size, 2)
+    sl_price = round(entry_price - 15 * pip_size, 2) if signal == "buy" else round(entry_price + 15 * pip_size, 2)
 
     return {
         "signal": signal,
@@ -118,9 +113,9 @@ def determine_signal(candles_5m):
         "tp1_price": tp1_price,
         "tp2_price": tp2_price,
         "sl_price": sl_price,
-        "tp1": round(tp1, 4),
-        "tp2": round(tp2, 4),
-        "sl": round(sl, 4),
+        "tp1": 30,
+        "tp2": 50,
+        "sl": 15,
         "time": utc_to_wib(last_candle["close_time"]),
         "result": None,
         "pips": 0
@@ -139,6 +134,7 @@ async def send_signal(context):
     if not candles_5m:
         await application.bot.send_message(chat_id=CHAT_ID, text="Gagal ambil data BTC/USD")
         return
+
     result = determine_signal(candles_5m)
     if not result:
         return
@@ -155,7 +151,6 @@ async def send_signal(context):
         f"🔥 TP2: {result['tp2_price']} (+50 pips)\n"
         f"⛔ SL: {result['sl_price']} (-15 pips)"
     )
-
     await application.bot.send_message(chat_id=CHAT_ID, text=msg)
 
     if len(signal_history) >= 5:
@@ -195,24 +190,24 @@ async def daily_recap(context):
     await application.bot.send_message(chat_id=CHAT_ID, text=recap_msg)
 
 async def start(update, context):
-    await update.message.reply_text("Bot sinyal BTC/USD siap!")
+    await update.message.reply_text("✅ Bot sinyal BTC/USD aktif!")
 
 async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    job_queue = application.job_queue
-    job_queue.run_repeating(send_signal, interval=25 * 60, first=5)
+    # ⏱️ Ubah ke deteksi sinyal setiap 10 detik
+    application.job_queue.run_repeating(send_signal, interval=10, first=1)
 
+    # ⏰ Rekapan harian pukul 20:00 WIB
     now = datetime.now(timezone.utc) + timedelta(hours=7)
     target_time = datetime.combine(now.date(), time(20, 0)).replace(tzinfo=timezone(timedelta(hours=7)))
     if now > target_time:
         target_time += timedelta(days=1)
     delay_seconds = (target_time - now).total_seconds()
+    application.job_queue.run_repeating(daily_recap, interval=86400, first=delay_seconds)
 
-    job_queue.run_repeating(daily_recap, interval=24 * 3600, first=delay_seconds)
-
-    print("Bot BTC/USD running...")
+    print("Bot BTC/USD aktif dan berjalan...")
     await application.run_polling()
 
 if __name__ == "__main__":
