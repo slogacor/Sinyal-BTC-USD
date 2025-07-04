@@ -1,4 +1,3 @@
-# ====== Tidak diubah ======
 import requests
 import logging
 from datetime import datetime, timedelta, time, timezone
@@ -6,7 +5,6 @@ import asyncio
 import numpy as np
 from telegram.ext import ApplicationBuilder, CommandHandler
 
-# ==========================
 BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
 CHAT_ID = "-1002883903673"
 signal_history = []
@@ -24,13 +22,13 @@ def fetch_klines(symbol, interval, limit=100):
     candles = []
     for d in data:
         candle = {
-            "open_time": datetime.fromtimestamp(d[0]/1000, timezone.utc),
+            "open_time": datetime.fromtimestamp(d[0] / 1000, tz=timezone.utc),
             "open": float(d[1]),
             "high": float(d[2]),
             "low": float(d[3]),
             "close": float(d[4]),
             "volume": float(d[5]),
-            "close_time": datetime.fromtimestamp(d[6]/1000, timezone.utc)
+            "close_time": datetime.fromtimestamp(d[6] / 1000, tz=timezone.utc)
         }
         candles.append(candle)
     return candles
@@ -38,26 +36,26 @@ def fetch_klines(symbol, interval, limit=100):
 def calculate_rsi(prices, period=14):
     deltas = np.diff(prices)
     seed = deltas[:period]
-    up = seed[seed >= 0].sum()/period
-    down = -seed[seed < 0].sum()/period
+    up = seed[seed >= 0].sum() / period
+    down = -seed[seed < 0].sum() / period
     rs = up / down if down != 0 else 0
     rsi = np.zeros_like(prices)
-    rsi[:period] = 100. - 100./(1.+rs)
+    rsi[:period] = 100. - 100. / (1. + rs)
     for i in range(period, len(prices)):
-        delta = deltas[i-1]
+        delta = deltas[i - 1]
         upval = delta if delta > 0 else 0.
         downval = -delta if delta < 0 else 0.
-        up = (up*(period-1) + upval)/period
-        down = (down*(period-1) + downval)/period
+        up = (up * (period - 1) + upval) / period
+        down = (down * (period - 1) + downval) / period
         rs = up / down if down != 0 else 0
-        rsi[i] = 100. - 100./(1.+rs)
+        rsi[i] = 100. - 100. / (1. + rs)
     return rsi
 
 def bollinger_bands(prices, window=20, no_of_std=2):
-    sma = np.convolve(prices, np.ones(window)/window, mode='valid')
-    rolling_std = np.array([np.std(prices[i:i+window]) for i in range(len(prices)-window+1)])
-    upper_band = sma + no_of_std*rolling_std
-    lower_band = sma - no_of_std*rolling_std
+    sma = np.convolve(prices, np.ones(window) / window, mode='valid')
+    rolling_std = np.array([np.std(prices[i:i + window]) for i in range(len(prices) - window + 1)])
+    upper_band = sma + no_of_std * rolling_std
+    lower_band = sma - no_of_std * rolling_std
     return sma, upper_band, lower_band
 
 def analyze_candlestick(candle, prev_candle):
@@ -73,19 +71,18 @@ def analyze_candlestick(candle, prev_candle):
         return "bearish"
     return "neutral"
 
-def determine_signal(candles_15m, candles_5m):
-    closes_15 = np.array([c["close"] for c in candles_15m])
-    closes_5 = np.array([c["close"] for c in candles_5m])
-    if len(closes_15) < 20 or len(closes_5) < 20:
+def determine_signal(candles_5m):
+    closes = np.array([c["close"] for c in candles_5m])
+    if len(closes) < 20:
         return None
-    rsi = calculate_rsi(closes_15)[-1]
-    sma, upper, lower = bollinger_bands(closes_15)
+    rsi = calculate_rsi(closes)[-1]
+    sma, upper, lower = bollinger_bands(closes)
     if len(sma) == 0:
         return None
-    last_candle_15 = candles_15m[-1]
-    prev_candle_15 = candles_15m[-2]
-    candle_pattern = analyze_candlestick(last_candle_15, prev_candle_15)
-    last_close = closes_15[-1]
+    last_candle = candles_5m[-1]
+    prev_candle = candles_5m[-2]
+    candle_pattern = analyze_candlestick(last_candle, prev_candle)
+    last_close = closes[-1]
     upper_last = upper[-1]
     lower_last = lower[-1]
     signal = "neutral"
@@ -114,7 +111,7 @@ def determine_signal(candles_15m, candles_5m):
         "tp1": round(tp1, 4),
         "tp2": round(tp2, 4),
         "sl": round(sl, 4),
-        "time": utc_to_wib(last_candle_15["close_time"]),
+        "time": utc_to_wib(last_candle["close_time"]),
         "result": None,
         "pips": 0
     }
@@ -128,36 +125,35 @@ def simulate_signal_result(signal_obj):
 async def send_signal(context):
     global signal_history
     application = context.application
-    candles_15m = fetch_klines("BTCUSDT", "15m", 100)
     candles_5m = fetch_klines("BTCUSDT", "5m", 100)
-    if not candles_15m or not candles_5m:
+    if not candles_5m:
         await application.bot.send_message(chat_id=CHAT_ID, text="Gagal ambil data BTC/USD")
         return
-    result = determine_signal(candles_15m, candles_5m)
+    result = determine_signal(candles_5m)
     if not result:
         return
 
     simulate_signal_result(result)
     signal_history.append(result)
-    emoji = "\ud83d\udd39" if result["signal"] == "buy" else "\ud83d\udd3b"
+    emoji = "🔹" if result["signal"] == "buy" else "🔻"
 
-    msg = (f"\u2728 Sinyal BTC/USD @ {result['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
+    msg = (f"✨ Sinyal BTC/USD @ {result['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
            f"{emoji} Sinyal: {result['signal'].upper()}\n"
-           f"\ud83c\udf1f TP1: +30 pips\n"
-           f"\ud83d\udd25 TP2: +50 pips\n"
-           f"\u26d4 SL: -15 pips")
+           f"🌟 TP1: +30 pips\n"
+           f"🔥 TP2: +50 pips\n"
+           f"⛔ SL: -15 pips")
     await application.bot.send_message(chat_id=CHAT_ID, text=msg)
 
     if len(signal_history) >= 5:
-        recap_msg = "\ud83d\udcca [Rekapan 5 Sinyal Terakhir]\n"
+        recap_msg = "📊 [Rekapan 5 Sinyal Terakhir]\n"
         total_pips = 0
         for i, s in enumerate(signal_history[-5:], 1):
-            status = "\u2705 TP1 \ud83c\udf1f +30 pips" if s["result"] == "TP1" else \
-                     "\u2705 TP2 \ud83d\udd25 +50 pips" if s["result"] == "TP2" else \
-                     "\u274c SL \u26d4 -15 pips"
+            status = "✅ TP1 🌟 +30 pips" if s["result"] == "TP1" else \
+                     "✅ TP2 🔥 +50 pips" if s["result"] == "TP2" else \
+                     "❌ SL ⛔ -15 pips"
             total_pips += s["pips"]
             recap_msg += f"{i}. {s['signal'].upper():<4} {status}\n"
-        recap_msg += f"\n\ud83d\udcc8 Total Pips: {'\u2795' if total_pips >= 0 else '\u2796'} {abs(total_pips)} pips"
+        recap_msg += f"\n📈 Total Pips: {'➕' if total_pips >= 0 else '➖'} {abs(total_pips)} pips"
         await application.bot.send_message(chat_id=CHAT_ID, text=recap_msg)
         signal_history = []
 
@@ -171,16 +167,16 @@ async def daily_recap(context):
     net_pips = tp_pips + sl_pips
     accuracy = int(profit_count / total * 100) if total > 0 else 0
 
-    recap_msg = (f"\ud83d\udcc5 [Rekapan Harian BTC/USD]\n"
-                 f"\ud83d\udcc8 Total Sinyal: {total}\n"
-                 f"\u2705 Profit: {profit_count}\n"
-                 f"\u274c Loss: {loss_count}\n\n"
-                 f"\ud83c\udf1f Total Pips:\n"
-                 f"\u2795 TP: {tp_pips} pips\n"
-                 f"\u2796 SL: {sl_pips} pips\n"
-                 f"\ud83d\udcca Net Pips: {net_pips:+} pips\n\n"
-                 f"\ud83c\udfaf Akurasi: {accuracy}%\n"
-                 f"\ud83d\udd25 Tetap disiplin & gunakan SL ya!")
+    recap_msg = (f"📅 [Rekapan Harian BTC/USD]\n"
+                 f"📈 Total Sinyal: {total}\n"
+                 f"✅ Profit: {profit_count}\n"
+                 f"❌ Loss: {loss_count}\n\n"
+                 f"🌟 Total Pips:\n"
+                 f"➕ TP: {tp_pips} pips\n"
+                 f"➖ SL: {sl_pips} pips\n"
+                 f"📊 Net Pips: {net_pips:+} pips\n\n"
+                 f"🎯 Akurasi: {accuracy}%\n"
+                 f"🔥 Tetap disiplin & gunakan SL ya!")
 
     await application.bot.send_message(chat_id=CHAT_ID, text=recap_msg)
 
@@ -192,15 +188,15 @@ async def main():
     application.add_handler(CommandHandler("start", start))
 
     job_queue = application.job_queue
-    job_queue.run_repeating(send_signal, interval=45*60, first=5)
+    job_queue.run_repeating(send_signal, interval=25 * 60, first=5)
 
     now = datetime.now(timezone.utc) + timedelta(hours=7)
-    target_time = datetime.combine(now.date(), time(20, 0))
+    target_time = datetime.combine(now.date(), time(20, 0)).replace(tzinfo=timezone(timedelta(hours=7)))
     if now > target_time:
         target_time += timedelta(days=1)
     delay_seconds = (target_time - now).total_seconds()
 
-    job_queue.run_repeating(daily_recap, interval=24*3600, first=delay_seconds)
+    job_queue.run_repeating(daily_recap, interval=24 * 3600, first=delay_seconds)
 
     print("Bot BTC/USD running...")
     await application.run_polling()
