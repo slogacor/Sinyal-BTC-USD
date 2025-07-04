@@ -22,8 +22,10 @@ BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
 CHAT_ID = "-1002883903673"
 signal_history = []
 
+
 def utc_to_wib(utc_dt):
     return utc_dt + timedelta(hours=7)
+
 
 def fetch_klines(symbol, interval, limit=100):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
@@ -42,6 +44,7 @@ def fetch_klines(symbol, interval, limit=100):
         "close_time": datetime.fromtimestamp(d[6] / 1000, tz=timezone.utc)
     } for d in data]
 
+
 def bollinger_bands(prices, window=20, no_of_std=2):
     sma = pd.Series(prices).rolling(window).mean()
     std = pd.Series(prices).rolling(window).std()
@@ -49,12 +52,14 @@ def bollinger_bands(prices, window=20, no_of_std=2):
     lower_band = sma - no_of_std * std
     return sma, upper_band, lower_band
 
+
 def stochastic_oscillator(highs, lows, closes, k_period=14, d_period=3):
     low_min = pd.Series(lows).rolling(window=k_period).min()
     high_max = pd.Series(highs).rolling(window=k_period).max()
     k = 100 * ((pd.Series(closes) - low_min) / (high_max - low_min))
     d = k.rolling(window=d_period).mean()
     return k, d
+
 
 def detect_snrs(candles):
     levels = []
@@ -66,6 +71,7 @@ def detect_snrs(candles):
         elif low < candles[i-1]['low'] and low < candles[i+1]['low']:
             levels.append(low)
     return levels[-3:]
+
 
 def detect_signal(candles):
     closes = [c['close'] for c in candles]
@@ -92,7 +98,7 @@ def detect_signal(candles):
     if not signal:
         return None
 
-    pip_size = 0.01
+    pip_size = 0.01 * 0.1  # Faktor pengali 0.1 sesuai permintaan
     entry = round(last_close, 2)
     tp1 = round(entry + 30 * pip_size, 2) if signal == "buy" else round(entry - 30 * pip_size, 2)
     tp2 = round(entry + 50 * pip_size, 2) if signal == "buy" else round(entry - 50 * pip_size, 2)
@@ -112,11 +118,13 @@ def detect_signal(candles):
         "pips": 0
     }
 
+
 def simulate_result(sig):
     from random import choice
     result = choice(["TP1", "TP2", "SL"])
     sig["result"] = result
     sig["pips"] = 30 if result == "TP1" else 50 if result == "TP2" else -15
+
 
 async def send_signal(context):
     global signal_history
@@ -155,6 +163,7 @@ async def send_signal(context):
         await app.bot.send_message(chat_id=CHAT_ID, text=recap)
         signal_history = []
 
+
 async def daily_recap(context):
     app = context.application
     total = len(signal_history)
@@ -174,15 +183,17 @@ async def daily_recap(context):
              f"🔥 Tetap disiplin & gunakan SL ya!")
     await app.bot.send_message(chat_id=CHAT_ID, text=recap)
 
+
 async def start(update, context):
     await update.message.reply_text("✅ Bot sinyal BTC/USD aktif!")
+
 
 async def main():
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    application.job_queue.run_repeating(send_signal, interval=10, first=5)
+    application.job_queue.run_repeating(send_signal, interval=1200, first=5)  # setiap 20 menit
 
     now = datetime.now(timezone.utc) + timedelta(hours=7)
     target = datetime.combine(now.date(), time(20, 0)).replace(tzinfo=timezone(timedelta(hours=7)))
@@ -193,6 +204,7 @@ async def main():
 
     print("Bot BTC/USD aktif dan berjalan...")
     await application.run_polling()
+
 
 if __name__ == "__main__":
     import nest_asyncio
