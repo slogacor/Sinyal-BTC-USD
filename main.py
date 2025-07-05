@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, time, timezone
 import asyncio
 import numpy as np
 import pandas as pd
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
 CHAT_ID = "-1002883903673"
@@ -119,7 +119,6 @@ def detect_signal(candles):
     if not signal:
         return None
 
-    # Konfirmasi arah trend M15
     trend = trend_direction()
     if (signal == "buy" and trend != "up") or (signal == "sell" and trend != "down"):
         return None
@@ -146,8 +145,10 @@ def simulate_result(sig):
     sig["pips"] = sig["tp1"] if result == "TP1" else sig["tp2"] if result == "TP2" else -sig["sl"]
 
 async def send_signal(context):
+    await do_send_signal(context.application)
+
+async def do_send_signal(app):
     global signal_history
-    app = context.application
     candles = fetch_klines("BTCUSDT", "5m", 100)
     if not candles:
         await app.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data BTC/USD")
@@ -215,18 +216,65 @@ async def daily_recap(context):
 async def start(update, context):
     await update.message.reply_text("✅ Bot sinyal BTC/USD aktif dengan mode swing!")
 
+# ✅ Tambahan fitur /check untuk cek manual
+async def check_signal(update, context: ContextTypes.DEFAULT_TYPE):
+    app = context.application
+    candles = fetch_klines("BTCUSDT", "5m", 100)
+    if not candles:
+        await update.message.reply_text("❌ Gagal ambil data BTC/USD")
+        return
+
+    signal = detect_signal(candles)
+    if not signal:
+        await update.message.reply_text("📉 Tidak ada sinyal valid saat ini.")
+        return
+
+    entry_price = fetch_realtime_price("BTCUSDT")
+    if entry_price is None:
+        await update.message.reply_text("❌ Gagal ambil harga realtime BTC/USD")
+        return
+
+    pip_size = 0.01 * 0.1
+    if signal["signal"] == "buy":
+        tp1_price = round(entry_price + signal["tp1"] * pip_size, 2)
+        tp2_price = round(entry_price + signal["tp2"] * pip_size, 2)
+        sl_price = round(entry_price - signal["sl"] * pip_size, 2)
+    else:
+        tp1_price = round(entry_price - signal["tp1"] * pip_size, 2)
+        tp2_price = round(entry_price - signal["tp2"] * pip_size, 2)
+        sl_price = round(entry_price + signal["sl"] * pip_size, 2)
+
+    signal.update({
+        "entry_price": round(entry_price, 2),
+        "tp1_price": tp1_price,
+        "tp2_price": tp2_price,
+        "sl_price": sl_price,
+    })
+
+    simulate_result(signal)
+    signal_history.append(signal)
+
+    emoji = "🔹" if signal["signal"] == "buy" else "🔻"
+    msg = (
+        f"✨ Sinyal BTC/USD @ {signal['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
+        f"{emoji} Sinyal: {signal['signal'].upper()} ({signal['strength']})\n"
+        f"💰 Entry: {signal['entry_price']}\n"
+        f"🌟 TP1: {signal['tp1_price']} (+{signal['tp1']} pips)\n"
+        f"🔥 TP2: {signal['tp2_price']} (+{signal['tp2']} pips)\n"
+        f"⛔ SL: {signal['sl_price']} (-{signal['sl']} pips)"
+    )
+    await update.message.reply_text(msg)
+
 async def main():
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("check", check_signal))  # ⬅️ Tambah fitur cek manual
 
-    # Sesi harian
     application.job_queue.run_daily(send_signal, time=time(0, 30))   # 07:30 WIB
     application.job_queue.run_daily(send_signal, time=time(6, 30))   # 13:30 WIB
     application.job_queue.run_daily(send_signal, time=time(13, 30))  # 20:30 WIB
-
-    # Rekapan harian pukul 21:00 WIB = 14:00 UTC
-    application.job_queue.run_daily(daily_recap, time=time(14, 0))
+    application.job_queue.run_daily(daily_recap, time=time(14, 0))   # 21:00 WIB
 
     print("Bot BTC/USD Swing aktif dan berjalan...")
     await application.run_polling()
