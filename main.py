@@ -76,6 +76,20 @@ def detect_snrs(candles):
             levels.append(low)
     return levels[-3:]
 
+def trend_direction(symbol="BTCUSDT", interval="15m", length=50):
+    candles = fetch_klines(symbol, interval, length)
+    if not candles:
+        return "sideways"
+    closes = [c['close'] for c in candles]
+    sma_short = pd.Series(closes).rolling(20).mean()
+    sma_long = pd.Series(closes).rolling(50).mean()
+    if sma_short.iloc[-1] > sma_long.iloc[-1]:
+        return "up"
+    elif sma_short.iloc[-1] < sma_long.iloc[-1]:
+        return "down"
+    else:
+        return "sideways"
+
 def detect_signal(candles):
     closes = [c['close'] for c in candles]
     highs = [c['high'] for c in candles]
@@ -95,23 +109,24 @@ def detect_signal(candles):
     signal = None
     strength = "lemah"
 
-    if last_close < support * 1.01 and last_k < 30 and last_k > last_d:
+    if last_close < support * 1.01 and last_k < 25 and last_k > last_d:
         signal = "buy"
-        # Sinyal kuat kalau stochastic k jauh di bawah d
-        strength = "kuat" if (last_d - last_k) > 5 else "sedang"
-    elif last_close > resistance * 0.99 and last_k > 70 and last_k < last_d:
+        strength = "kuat" if (last_d - last_k) > 7 else "sedang"
+    elif last_close > resistance * 0.99 and last_k > 75 and last_k < last_d:
         signal = "sell"
-        strength = "kuat" if (last_k - last_d) > 5 else "sedang"
+        strength = "kuat" if (last_k - last_d) > 7 else "sedang"
 
     if not signal:
         return None
 
-    pip_size = 0.01 * 0.1  # faktor pengali 0.1 sesuai permintaan
-    # Entry harga akan diganti realtime saat kirim sinyal
+    # Konfirmasi arah trend M15
+    trend = trend_direction()
+    if (signal == "buy" and trend != "up") or (signal == "sell" and trend != "down"):
+        return None
 
-    tp1_pips = np.random.randint(25, 46)
-    tp2_pips = np.random.randint(40, 66)
-    sl_pips = np.random.randint(15, 26)
+    tp1_pips = np.random.randint(45, 65)
+    tp2_pips = np.random.randint(65, 90)
+    sl_pips = np.random.randint(20, 30)
 
     return {
         "signal": signal,
@@ -135,20 +150,18 @@ async def send_signal(context):
     app = context.application
     candles = fetch_klines("BTCUSDT", "5m", 100)
     if not candles:
-        await app.bot.send_message(chat_id=CHAT_ID, text="Gagal ambil data BTC/USD")
+        await app.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data BTC/USD")
         return
 
     signal = detect_signal(candles)
     if not signal:
         return
 
-    # Ambil harga realtime sebagai entry
     entry_price = fetch_realtime_price("BTCUSDT")
     if entry_price is None:
-        await app.bot.send_message(chat_id=CHAT_ID, text="Gagal ambil harga realtime BTC/USD")
+        await app.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil harga realtime BTC/USD")
         return
 
-    # Hitung TP dan SL berdasarkan entry realtime
     pip_size = 0.01 * 0.1
     if signal["signal"] == "buy":
         tp1_price = round(entry_price + signal["tp1"] * pip_size, 2)
@@ -180,17 +193,6 @@ async def send_signal(context):
     )
     await app.bot.send_message(chat_id=CHAT_ID, text=msg)
 
-    if len(signal_history) >= 5:
-        total_pips = 0
-        recap = "📊 [Rekapan 5 Sinyal Terakhir]\n"
-        for i, s in enumerate(signal_history[-5:], 1):
-            hasil = f"✅ TP1 🌟 +{s['tp1']}" if s["result"] == "TP1" else f"✅ TP2 🔥 +{s['tp2']}" if s["result"] == "TP2" else f"❌ SL ⛔ -{s['sl']}"
-            total_pips += s["pips"]
-            recap += f"{i}. {s['signal'].upper():<4} {hasil} pips\n"
-        recap += f"\n📈 Total Pips: {'➕' if total_pips >= 0 else '➖'} {abs(total_pips)} pips"
-        await app.bot.send_message(chat_id=CHAT_ID, text=recap)
-        signal_history = []
-
 async def daily_recap(context):
     app = context.application
     total = len(signal_history)
@@ -211,37 +213,22 @@ async def daily_recap(context):
     await app.bot.send_message(chat_id=CHAT_ID, text=recap)
 
 async def start(update, context):
-    await update.message.reply_text("✅ Bot sinyal BTC/USD aktif!")
-
-async def send_signal_scheduler(context):
-    """
-    Fungsi scheduler ini dipanggil tiap 1 menit,
-    dan cuma kirim signal setiap 45 menit tepat,
-    dengan logika kirim sinyal 1 menit sebelum candle 5m close.
-    """
-    now = datetime.utcnow().replace(second=0, microsecond=0)
-    minute = now.minute
-    # candle 5m berakhir di menit kelipatan 5, sinyal kirim 1 menit sebelum itu, jadi menit 4,9,14,19,...
-    if minute % 5 == 4:
-        await send_signal(context)
+    await update.message.reply_text("✅ Bot sinyal BTC/USD aktif dengan mode swing!")
 
 async def main():
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    # Jalankan scheduler tiap 1 menit cek sinyal
-    application.job_queue.run_repeating(send_signal_scheduler, interval=60, first=10)
+    # Sesi harian
+    application.job_queue.run_daily(send_signal, time=time(0, 30))   # 07:30 WIB
+    application.job_queue.run_daily(send_signal, time=time(6, 30))   # 13:30 WIB
+    application.job_queue.run_daily(send_signal, time=time(13, 30))  # 20:30 WIB
 
-    # Rekap harian tetap di jam 20:00 WIB
-    now = datetime.now(timezone.utc) + timedelta(hours=7)
-    target = datetime.combine(now.date(), time(20, 0)).replace(tzinfo=timezone(timedelta(hours=7)))
-    if now > target:
-        target += timedelta(days=1)
-    delay = (target - now).total_seconds()
-    application.job_queue.run_repeating(daily_recap, interval=86400, first=delay)
+    # Rekapan harian pukul 21:00 WIB = 14:00 UTC
+    application.job_queue.run_daily(daily_recap, time=time(14, 0))
 
-    print("Bot BTC/USD aktif dan berjalan...")
+    print("Bot BTC/USD Swing aktif dan berjalan...")
     await application.run_polling()
 
 if __name__ == "__main__":
