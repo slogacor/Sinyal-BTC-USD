@@ -210,7 +210,6 @@ async def do_send_signal(app):
 async def start(update, context):
     await update.message.reply_text("✅ Bot sinyal BTC/USD aktif!")
 
-
 async def last_signal(update, context):
     if not signal_history:
         await update.message.reply_text("Belum ada sinyal.")
@@ -229,6 +228,13 @@ async def last_signal(update, context):
     )
     await update.message.reply_text(msg)
 
+async def price(update, context):
+    price = await fetch_tv_price("BTCUSD")
+    if price:
+        await update.message.reply_text(f"Harga BTC/USD saat ini: {price}")
+    else:
+        await update.message.reply_text("Gagal mendapatkan harga saat ini.")
+
 
 # === MAIN ===
 if __name__ == "__main__":
@@ -240,6 +246,7 @@ if __name__ == "__main__":
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("last_signal", last_signal))
+    application.add_handler(CommandHandler("price", price))
 
     # Schedule kirim sinyal setiap 5 menit
     async def periodic_signal():
