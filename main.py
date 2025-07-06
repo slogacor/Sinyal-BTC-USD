@@ -1,258 +1,216 @@
-# === KEEP ALIVE UNTUK RAILWAY ===
 from flask import Flask
 from threading import Thread
+import requests
+import logging
+from datetime import datetime, timedelta, time, timezone
+import asyncio
+import pandas as pd
+import ta
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+# --- KONFIGURASI ---
+BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
+CHAT_ID = "-1002883903673"  # Grup target
+AUTHORIZED_USER_ID = 1305881282
+API_KEY = "841e95162faf457e8d80207a75c3ca2c"
+signals_buffer = []
+
+# === KEEP ALIVE UNTUK RAILWAY/REPLIT ===
 app = Flask('')
-
 @app.route('/')
 def home():
     return "Bot is alive!"
-
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
+# === AMBIL DATA DARI TWELVEDATA ===
+def fetch_twelvedata(symbol="EUR/USD", interval="5min", outputsize=100):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={API_KEY}"
+    try:
+        res = requests.get(url)
+        data = res.json()
+        if "values" not in data:
+            logging.error("Data tidak tersedia: %s", data.get("message", ""))
+            return None
+        candles = [{
+            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S"),
+            "open": float(d["open"]),
+            "high": float(d["high"]),
+            "low": float(d["low"]),
+            "close": float(d["close"])
+        } for d in data["values"]]
+        return candles
+    except Exception as e:
+        logging.error(f"Gagal ambil data dari Twelve Data: {e}")
+        return None
 
-# === BOT UTAMA ===
-import logging
-import asyncio
-import json
-import time as t
-import numpy as np
-import pandas as pd
-from datetime import datetime, timedelta, timezone
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from tradingview_ta import TA_Handler, Interval
-import nest_asyncio  # ⬅️ Diperlukan untuk patch loop
-nest_asyncio.apply()
+def prepare_df(candles):
+    df = pd.DataFrame(candles)
+    df = df.sort_values("datetime").reset_index(drop=True)
+    return df
 
-BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
-CHAT_ID = "-1002883903673"
-signal_history = []
+def find_snr(df):
+    recent = df.tail(30)
+    support = recent["low"].min()
+    resistance = recent["high"].max()
+    return support, resistance
 
-# === UTILITY ===
-def utc_to_wib(utc_dt):
-    return utc_dt + timedelta(hours=7)
+def confirm_trend_from_last_3(df):
+    candles = df.tail(4)
+    if len(candles) < 4:
+        return None
+    c1, c2, c3 = candles.iloc[-4:-1].to_dict('records')
+    uptrend = all(c["close"] > c["open"] for c in [c1, c2, c3])
+    downtrend = all(c["close"] < c["open"] for c in [c1, c2, c3])
+    if uptrend:
+        return "BUY"
+    elif downtrend:
+        return "SELL"
+    else:
+        return None
 
-# === FETCH PRICE dari TradingView ===
-async def fetch_tv_price(symbol="BTCUSD"):
-    def get_price():
-        handler = TA_Handler(
-            symbol=symbol,
-            screener="forex",
-            exchange="EXNESS",
-            interval=Interval.INTERVAL_1_MINUTE
+def generate_signal(df):
+    df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+    df["ma"] = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator()
+    df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
+    df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+
+    support, resistance = find_snr(df)
+    last_close = df["close"].iloc[-1]
+    rsi_now = df["rsi"].iloc[-1]
+    ma = df["ma"].iloc[-1]
+    ema = df["ema"].iloc[-1]
+    atr = df["atr"].iloc[-1]
+
+    trend = confirm_trend_from_last_3(df)
+    if not trend:
+        if atr > 0.2:
+            return ("LEMAH", last_close, rsi_now, atr, ma, ema), 1, support, resistance
+        else:
+            return None, 0, support, resistance
+
+    score = 0
+    if atr > 0.2:
+        score += 1
+    if trend == "BUY" and last_close > ma and last_close > ema and rsi_now < 70:
+        score += 2
+    elif trend == "SELL" and last_close < ma and last_close < ema and rsi_now > 30:
+        score += 2
+
+    if score >= 3:
+        return (trend, last_close, rsi_now, atr, ma, ema), score, support, resistance
+    elif score >= 1:
+        return (trend, last_close, rsi_now, atr, ma, ema), score, support, resistance
+    else:
+        return None, score, support, resistance
+
+def calculate_tp_sl(signal, entry, score):
+    if score >= 3:
+        tp1_pips, tp2_pips, sl_pips = 30, 55, 20
+    elif score == 2:
+        tp1_pips, tp2_pips, sl_pips = 25, 40, 20
+    else:
+        tp1_pips, tp2_pips, sl_pips = 15, 25, 15
+
+    tp1 = entry + tp1_pips * 0.1 if signal == "BUY" else entry - tp1_pips * 0.1
+    tp2 = entry + tp2_pips * 0.1 if signal == "BUY" else entry - tp2_pips * 0.1
+    sl = entry - sl_pips * 0.1 if signal == "BUY" else entry + sl_pips * 0.1
+
+    return tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips
+
+def adjust_entry(signal, entry, last_close):
+    if signal == "BUY" and entry >= last_close:
+        entry = last_close - 0.01
+    elif signal == "SELL" and entry <= last_close:
+        entry = last_close + 0.01
+    return round(entry, 5)
+
+def format_status(score):
+    if score >= 3:
+        return "GOLDEN MOMENT 🌟"
+    elif score == 2:
+        return "MODERATE ⚠️"
+    else:
+        return "LEMAH ⚠️ Harap berhati-hati saat entry dan gunakan manajemen risiko"
+
+def is_weekend(now):
+    return now.weekday() in [5, 6]
+
+async def send_signal(context):
+    global signals_buffer
+    application = context.application
+    now = datetime.now(timezone.utc) + timedelta(hours=7)
+
+    if is_weekend(now) or (now.weekday() == 0 and now.time() < time(8, 0)):
+        return
+
+    if now.minute % 45 != 0:
+        return
+
+    candles = fetch_twelvedata("EUR/USD", "5min", 9)
+    if candles is None or len(candles) < 9:
+        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data EUR/USD (kurang dari 9 candle)")
+        return
+    df = prepare_df(candles)
+    df_analyze = df.iloc[0:8]
+
+    result, score, support, resistance = generate_signal(df_analyze)
+    if result:
+        signal, entry, rsi, atr, ma, ema = result
+        last_close = df_analyze["close"].iloc[-1]
+        entry = adjust_entry(signal, entry, last_close)
+        tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips = calculate_tp_sl(signal, entry, score)
+        status_text = format_status(score)
+        entry_note = "Entry di bawah harga sinyal" if signal == "BUY" else "Entry di atas harga sinyal"
+        msg = (
+            f"🚨 *Sinyal {signal}* {'⬆️' if signal=='BUY' else '⬇️'} _EUR/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"📊 Status: {status_text}\n"
+            f"⏳ RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
+            f"⚖️ Support: {support:.5f}, Resistance: {resistance:.5f}\n"
+            f"💰 Entry: {entry:.5f} ({entry_note})\n"
+            f"🎯 TP1: {tp1:.5f} (+{tp1_pips} pips), TP2: {tp2:.5f} (+{tp2_pips} pips)\n"
+            f"🛑 SL: {sl:.5f} (-{sl_pips} pips)"
         )
-        analysis = handler.get_analysis()
-        return analysis.indicators['close']
-    price = await asyncio.to_thread(get_price)
-    return price
-
-# === DATA DUMMY UNTUK CANDLE (bisa diganti API asli) ===
-def fetch_klines_dummy(symbol="BTCUSD", interval="5m", limit=100):
-    now = datetime.now(tz=timezone.utc)
-    candles = []
-    price = 60000
-    for i in range(limit):
-        ts = now - timedelta(minutes=5 * (limit - i))
-        candles.append({
-            "open_time": ts,
-            "open": price + np.random.uniform(-100, 100),
-            "high": price + np.random.uniform(50, 150),
-            "low": price - np.random.uniform(50, 150),
-            "close": price + np.random.uniform(-100, 100),
-            "volume": np.random.uniform(10, 100),
-            "close_time": ts + timedelta(minutes=5)
-        })
-    return candles
-
-# === ANALISIS TEKNIKAL ===
-def bollinger_bands(prices, window=20, no_of_std=2):
-    sma = pd.Series(prices).rolling(window).mean()
-    std = pd.Series(prices).rolling(window).std()
-    upper_band = sma + no_of_std * std
-    lower_band = sma - no_of_std * std
-    return sma, upper_band, lower_band
-
-def stochastic_oscillator(highs, lows, closes, k_period=14, d_period=3):
-    low_min = pd.Series(lows).rolling(window=k_period).min()
-    high_max = pd.Series(highs).rolling(window=k_period).max()
-    k = 100 * ((pd.Series(closes) - low_min) / (high_max - low_min))
-    d = k.rolling(window=d_period).mean()
-    return k, d
-
-def detect_snrs(candles):
-    levels = []
-    for i in range(2, len(candles) - 2):
-        high = candles[i]['high']
-        low = candles[i]['low']
-        if high > candles[i-1]['high'] and high > candles[i+1]['high']:
-            levels.append(high)
-        elif low < candles[i-1]['low'] and low < candles[i+1]['low']:
-            levels.append(low)
-    return levels[-3:]
-
-def trend_direction(candles):
-    closes = [c['close'] for c in candles]
-    sma_short = pd.Series(closes).rolling(20).mean()
-    sma_long = pd.Series(closes).rolling(50).mean()
-    if sma_short.iloc[-1] > sma_long.iloc[-1]:
-        return "up"
-    elif sma_short.iloc[-1] < sma_long.iloc[-1]:
-        return "down"
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+        signals_buffer.append(signal)
     else:
-        return "sideways"
+        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Tidak ada sinyal valid saat ini.")
 
-def detect_signal(candles):
-    closes = [c['close'] for c in candles]
-    highs = [c['high'] for c in candles]
-    lows = [c['low'] for c in candles]
-
-    if len(closes) < 20:
-        return None
-
-    sma, upper, lower = bollinger_bands(closes)
-    k, d = stochastic_oscillator(highs, lows, closes)
-    last_close = closes[-1]
-    last_k, last_d = k.iloc[-1], d.iloc[-1]
-    snrs = detect_snrs(candles)
-    support = min(snrs) if snrs else min(lows)
-    resistance = max(snrs) if snrs else max(highs)
-
-    signal = None
-    strength = "lemah"
-
-    if last_close < support * 1.01 and last_k < 25 and last_k > last_d:
-        signal = "buy"
-        strength = "kuat" if (last_d - last_k) > 7 else "sedang"
-    elif last_close > resistance * 0.99 and last_k > 75 and last_k < last_d:
-        signal = "sell"
-        strength = "kuat" if (last_k - last_d) > 7 else "sedang"
-
-    if not signal:
-        return None
-
-    trend = trend_direction(candles)
-    if (signal == "buy" and trend != "up") or (signal == "sell" and trend != "down"):
-        return None
-
-    tp1_pips = np.random.randint(45, 65)
-    tp2_pips = np.random.randint(65, 90)
-    sl_pips = np.random.randint(20, 30)
-
-    return {
-        "signal": signal,
-        "strength": strength,
-        "tp1": tp1_pips,
-        "tp2": tp2_pips,
-        "sl": sl_pips,
-        "time": utc_to_wib(candles[-1]["close_time"]),
-        "result": None,
-        "pips": 0
-    }
-
-def simulate_result(sig):
-    from random import choice
-    result = choice(["TP1", "TP2", "SL"])
-    sig["result"] = result
-    sig["pips"] = sig["tp1"] if result == "TP1" else sig["tp2"] if result == "TP2" else -sig["sl"]
-
-# === KIRIM SIGNAL ===
-async def do_send_signal(app):
-    global signal_history
-    candles = fetch_klines_dummy("BTCUSD", "5m", 100)
-    signal = detect_signal(candles)
-    if not signal:
+# === COMMAND HANDLER /start ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != AUTHORIZED_USER_ID:
+        await update.message.reply_text("❌ Anda tidak diizinkan menjalankan bot ini.")
         return
 
-    price = await fetch_tv_price("BTCUSD")
-    if not price:
-        await app.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil harga BTC/USD dari TradingView")
-        return
+    await update.message.reply_text("✅ Bot aktif dan akan mulai mengirim sinyal setiap 45 menit.")
+    
+    async def job():
+        while True:
+            await send_signal(context)
+            await asyncio.sleep(60)
 
-    pip_size = 0.01 * 0.1
-    if signal["signal"] == "buy":
-        tp1_price = round(price + signal["tp1"] * pip_size, 2)
-        tp2_price = round(price + signal["tp2"] * pip_size, 2)
-        sl_price = round(price - signal["sl"] * pip_size, 2)
-    else:
-        tp1_price = round(price - signal["tp1"] * pip_size, 2)
-        tp2_price = round(price - signal["tp2"] * pip_size, 2)
-        sl_price = round(price + signal["sl"] * pip_size, 2)
+    asyncio.create_task(job())
 
-    signal.update({
-        "entry_price": round(price, 2),
-        "tp1_price": tp1_price,
-        "tp2_price": tp2_price,
-        "sl_price": sl_price,
-    })
-
-    simulate_result(signal)
-    signal_history.append(signal)
-
-    emoji = "🔹" if signal["signal"] == "buy" else "🔻"
-    msg = (
-        f"✨ Sinyal BTC/USD @ {signal['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
-        f"{emoji} Sinyal: {signal['signal'].upper()} ({signal['strength']})\n"
-        f"💰 Entry: {signal['entry_price']}\n"
-        f"🌟 TP1: {signal['tp1_price']} (+{signal['tp1']} pips)\n"
-        f"🔥 TP2: {signal['tp2_price']} (+{signal['tp2']} pips)\n"
-        f"⛔ SL: {signal['sl_price']} (-{signal['sl']} pips)"
-    )
-    await app.bot.send_message(chat_id=CHAT_ID, text=msg)
-
-# === COMMANDS ===
-async def start(update, context):
-    await update.message.reply_text("✅ Bot sinyal BTC/USD aktif!")
-
-async def last_signal(update, context):
-    if not signal_history:
-        await update.message.reply_text("Belum ada sinyal.")
-        return
-    last = signal_history[-1]
-    emoji = "🔹" if last["signal"] == "buy" else "🔻"
-    msg = (
-        f"Sinyal terakhir:\n"
-        f"{emoji} {last['signal'].upper()} ({last['strength']})\n"
-        f"Entry: {last['entry_price']}\n"
-        f"TP1: {last['tp1_price']} (+{last['tp1']} pips)\n"
-        f"TP2: {last['tp2_price']} (+{last['tp2']} pips)\n"
-        f"SL: {last['sl_price']} (-{last['sl']} pips)\n"
-        f"Waktu: {last['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
-        f"Hasil: {last['result']} ({last['pips']} pips)"
-    )
-    await update.message.reply_text(msg)
-
-async def price(update, context):
-    price = await fetch_tv_price("BTCUSD")
-    if price:
-        await update.message.reply_text(f"Harga BTC/USD saat ini: {price}")
-    else:
-        await update.message.reply_text("Gagal mendapatkan harga BTC/USD saat ini.")
+# === COMMAND HANDLER /price ===
+async def price_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        url = f"https://api.twelvedata.com/price?symbol=EUR/USD&apikey={API_KEY}"
+        res = requests.get(url)
+        data = res.json()
+        if "price" in data:
+            price = float(data["price"])
+            await update.message.reply_text(f"💱 *EUR/USD Price Now:* {price:.5f}", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("❌ Gagal mengambil harga saat ini.")
+    except Exception as e:
+        logging.error(f"Gagal ambil harga: {e}")
+        await update.message.reply_text("❌ Terjadi kesalahan saat mengambil harga.")
 
 # === MAIN ===
 if __name__ == "__main__":
     keep_alive()
-
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
-    )
-
     application = ApplicationBuilder().token(BOT_TOKEN).build()
-
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("last_signal", last_signal))
-    application.add_handler(CommandHandler("price", price))
-
-    async def periodic_signal():
-        while True:
-            try:
-                await do_send_signal(application)
-            except Exception as e:
-                print(f"Error saat kirim sinyal: {e}")
-            await asyncio.sleep(300)
-
-    async def run():
-        asyncio.create_task(periodic_signal())
-        await application.run_polling()
-
-    asyncio.run(run())
+    application.add_handler(CommandHandler("price", price_handler))
+    application.run_polling()
