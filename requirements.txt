@@ -5,4 +5,4 @@ nest_asyncio==1.6.0
 pandas==2.2.2
 flask==3.0.3
 websocket-client==1.7.0
-tradingview_ta==3.3.0
+
