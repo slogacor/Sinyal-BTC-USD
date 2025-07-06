@@ -3,53 +3,91 @@ from flask import Flask
 from threading import Thread
 
 app = Flask('')
+
 @app.route('/')
 def home():
     return "Bot is alive!"
+
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
+
 # === BOT UTAMA ===
-import requests
 import logging
-from datetime import datetime, timedelta, time, timezone
 import asyncio
+import json
+import time as t
+import websockets
 import numpy as np
 import pandas as pd
+from datetime import datetime, timedelta, time, timezone
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
 CHAT_ID = "-1002883903673"
 signal_history = []
 
+# === UTILITY ===
 def utc_to_wib(utc_dt):
     return utc_dt + timedelta(hours=7)
 
-def fetch_klines(symbol, interval, limit=100):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    res = requests.get(url)
-    if res.status_code != 200:
-        logging.error(f"Binance API error: {res.status_code}")
-        return None
-    data = res.json()
-    return [{
-        "open_time": datetime.fromtimestamp(d[0] / 1000, tz=timezone.utc),
-        "open": float(d[1]),
-        "high": float(d[2]),
-        "low": float(d[3]),
-        "close": float(d[4]),
-        "volume": float(d[5]),
-        "close_time": datetime.fromtimestamp(d[6] / 1000, tz=timezone.utc)
-    } for d in data]
 
-def fetch_realtime_price(symbol="BTCUSDT"):
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    res = requests.get(url)
-    if res.status_code != 200:
-        logging.error(f"Binance API realtime price error: {res.status_code}")
+# === WEBSOCKET TRADINGVIEW ===
+symbol_map = {
+    "BTCUSD": "OANDA:BTCUSD"
+}
+
+async def fetch_tv_price(symbol="BTCUSD"):
+    tv_symbol = symbol_map.get(symbol.upper(), f"OANDA:{symbol.upper()}")
+    session = f"qs_{int(t.time()*1000)}"
+
+    async with websockets.connect("wss://data.tradingview.com/socket.io/websocket", ping_interval=None) as ws:
+        def send(payload):
+            msg = f"~m~{len(payload)}~m~{payload}"
+            return msg
+
+        await ws.send(send(json.dumps({"m": "set_auth_token", "p": ["unauthorized"]})))
+        await ws.send(send(json.dumps({"m": "chart_create_session", "p": [session, ""]})))
+        await ws.send(send(json.dumps({"m": "quote_create_session", "p": [session]})))
+        await ws.send(send(json.dumps({"m": "quote_add_symbols", "p": [session, tv_symbol]})))
+        await ws.send(send(json.dumps({"m": "quote_fast_symbols", "p": [session, tv_symbol]})))
+
+        price = None
+        for _ in range(30):  # max 3s polling
+            response = await ws.recv()
+            if "price" in response:
+                try:
+                    payload_start = response.find("{")
+                    payload = json.loads(response[payload_start:])
+                    data = payload.get("p", [{}])[0]
+                    price = data.get("lp")
+                    if price:
+                        return float(price)
+                except:
+                    continue
+            await asyncio.sleep(0.1)
+
         return None
-    data = res.json()
-    return float(data["price"])
+
+
+# === ANALISIS DAN SINYAL ===
+def fetch_klines_dummy(symbol="BTCUSD", interval="5m", limit=100):
+    # Dummy data generator — ganti kalau sudah punya API untuk candle dari OANDA
+    now = datetime.now(tz=timezone.utc)
+    candles = []
+    price = 60000
+    for i in range(limit):
+        ts = now - timedelta(minutes=5 * (limit - i))
+        candles.append({
+            "open_time": ts,
+            "open": price + np.random.uniform(-100, 100),
+            "high": price + np.random.uniform(50, 150),
+            "low": price - np.random.uniform(50, 150),
+            "close": price + np.random.uniform(-100, 100),
+            "volume": np.random.uniform(10, 100),
+            "close_time": ts + timedelta(minutes=5)
+        })
+    return candles
 
 def bollinger_bands(prices, window=20, no_of_std=2):
     sma = pd.Series(prices).rolling(window).mean()
@@ -76,10 +114,7 @@ def detect_snrs(candles):
             levels.append(low)
     return levels[-3:]
 
-def trend_direction(symbol="BTCUSDT", interval="15m", length=50):
-    candles = fetch_klines(symbol, interval, length)
-    if not candles:
-        return "sideways"
+def trend_direction(candles):
     closes = [c['close'] for c in candles]
     sma_short = pd.Series(closes).rolling(20).mean()
     sma_long = pd.Series(closes).rolling(50).mean()
@@ -119,7 +154,7 @@ def detect_signal(candles):
     if not signal:
         return None
 
-    trend = trend_direction()
+    trend = trend_direction(candles)
     if (signal == "buy" and trend != "up") or (signal == "sell" and trend != "down"):
         return None
 
@@ -144,37 +179,32 @@ def simulate_result(sig):
     sig["result"] = result
     sig["pips"] = sig["tp1"] if result == "TP1" else sig["tp2"] if result == "TP2" else -sig["sl"]
 
-async def send_signal(context):
-    await do_send_signal(context.application)
 
+# === SIGNAL EXECUTION ===
 async def do_send_signal(app):
     global signal_history
-    candles = fetch_klines("BTCUSDT", "5m", 100)
-    if not candles:
-        await app.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data BTC/USD")
-        return
-
+    candles = fetch_klines_dummy("BTCUSD", "5m", 100)
     signal = detect_signal(candles)
     if not signal:
         return
 
-    entry_price = fetch_realtime_price("BTCUSDT")
-    if entry_price is None:
-        await app.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil harga realtime BTC/USD")
+    price = await fetch_tv_price("BTCUSD")
+    if not price:
+        await app.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil harga BTC/USD dari TradingView")
         return
 
     pip_size = 0.01 * 0.1
     if signal["signal"] == "buy":
-        tp1_price = round(entry_price + signal["tp1"] * pip_size, 2)
-        tp2_price = round(entry_price + signal["tp2"] * pip_size, 2)
-        sl_price = round(entry_price - signal["sl"] * pip_size, 2)
+        tp1_price = round(price + signal["tp1"] * pip_size, 2)
+        tp2_price = round(price + signal["tp2"] * pip_size, 2)
+        sl_price = round(price - signal["sl"] * pip_size, 2)
     else:
-        tp1_price = round(entry_price - signal["tp1"] * pip_size, 2)
-        tp2_price = round(entry_price - signal["tp2"] * pip_size, 2)
-        sl_price = round(entry_price + signal["sl"] * pip_size, 2)
+        tp1_price = round(price - signal["tp1"] * pip_size, 2)
+        tp2_price = round(price - signal["tp2"] * pip_size, 2)
+        sl_price = round(price + signal["sl"] * pip_size, 2)
 
     signal.update({
-        "entry_price": round(entry_price, 2),
+        "entry_price": round(price, 2),
         "tp1_price": tp1_price,
         "tp2_price": tp2_price,
         "sl_price": sl_price,
@@ -194,90 +224,35 @@ async def do_send_signal(app):
     )
     await app.bot.send_message(chat_id=CHAT_ID, text=msg)
 
-async def daily_recap(context):
-    app = context.application
-    total = len(signal_history)
-    profit = sum(1 for s in signal_history if s["result"] in ["TP1", "TP2"])
-    loss = sum(1 for s in signal_history if s["result"] == "SL")
-    tp = sum(s["pips"] for s in signal_history if s["pips"] > 0)
-    sl = sum(s["pips"] for s in signal_history if s["pips"] < 0)
-    net = tp + sl
-    acc = int(profit / total * 100) if total else 0
 
-    recap = (f"📅 [Rekapan Harian BTC/USD]\n"
-             f"📈 Total Sinyal: {total}\n"
-             f"✅ Profit: {profit}\n"
-             f"❌ Loss: {loss}\n\n"
-             f"🌟 Total Pips:\n➕ TP: {tp} pips\n➖ SL: {sl} pips\n"
-             f"📊 Net Pips: {net:+} pips\n🎯 Akurasi: {acc}%\n"
-             f"🔥 Tetap disiplin & gunakan SL ya!")
-    await app.bot.send_message(chat_id=CHAT_ID, text=recap)
-
+# === COMMAND HANDLERS ===
 async def start(update, context):
-    await update.message.reply_text("✅ Bot sinyal BTC/USD aktif dengan mode swing!")
+    await update.message.reply_text("✅ Bot sinyal BTC/USD aktif!")
 
-# ✅ Tambahan fitur /check untuk cek manual
-async def check_signal(update, context: ContextTypes.DEFAULT_TYPE):
-    app = context.application
-    candles = fetch_klines("BTCUSDT", "5m", 100)
-    if not candles:
-        await update.message.reply_text("❌ Gagal ambil data BTC/USD")
-        return
+async def send_signal(context):
+    await do_send_signal(context.application)
 
-    signal = detect_signal(candles)
-    if not signal:
-        await update.message.reply_text("📉 Tidak ada sinyal valid saat ini.")
-        return
-
-    entry_price = fetch_realtime_price("BTCUSDT")
-    if entry_price is None:
-        await update.message.reply_text("❌ Gagal ambil harga realtime BTC/USD")
-        return
-
-    pip_size = 0.01 * 0.1
-    if signal["signal"] == "buy":
-        tp1_price = round(entry_price + signal["tp1"] * pip_size, 2)
-        tp2_price = round(entry_price + signal["tp2"] * pip_size, 2)
-        sl_price = round(entry_price - signal["sl"] * pip_size, 2)
+async def get_price(update, context):
+    price = await fetch_tv_price("BTCUSD")
+    if price:
+        await update.message.reply_text(f"💰 Harga BTC/USD (Forex): {round(price, 2)}")
     else:
-        tp1_price = round(entry_price - signal["tp1"] * pip_size, 2)
-        tp2_price = round(entry_price - signal["tp2"] * pip_size, 2)
-        sl_price = round(entry_price + signal["sl"] * pip_size, 2)
+        await update.message.reply_text("❌ Gagal mengambil harga BTC/USD.")
 
-    signal.update({
-        "entry_price": round(entry_price, 2),
-        "tp1_price": tp1_price,
-        "tp2_price": tp2_price,
-        "sl_price": sl_price,
-    })
-
-    simulate_result(signal)
-    signal_history.append(signal)
-
-    emoji = "🔹" if signal["signal"] == "buy" else "🔻"
-    msg = (
-        f"✨ Sinyal BTC/USD @ {signal['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
-        f"{emoji} Sinyal: {signal['signal'].upper()} ({signal['strength']})\n"
-        f"💰 Entry: {signal['entry_price']}\n"
-        f"🌟 TP1: {signal['tp1_price']} (+{signal['tp1']} pips)\n"
-        f"🔥 TP2: {signal['tp2_price']} (+{signal['tp2']} pips)\n"
-        f"⛔ SL: {signal['sl_price']} (-{signal['sl']} pips)"
-    )
-    await update.message.reply_text(msg)
-
+# === BOT ENTRY POINT ===
 async def main():
     keep_alive()
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("check", check_signal))  # ⬅️ Tambah fitur cek manual
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    application.job_queue.run_daily(send_signal, time=time(0, 30))   # 07:30 WIB
-    application.job_queue.run_daily(send_signal, time=time(6, 30))   # 13:30 WIB
-    application.job_queue.run_daily(send_signal, time=time(13, 30))  # 20:30 WIB
-    application.job_queue.run_daily(daily_recap, time=time(14, 0))   # 21:00 WIB
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("price", get_price))
 
-    print("Bot BTC/USD Swing aktif dan berjalan...")
-    await application.run_polling()
+    app.job_queue.run_daily(send_signal, time=time(0, 30))   # 07:30 WIB
+    app.job_queue.run_daily(send_signal, time=time(6, 30))   # 13:30 WIB
+    app.job_queue.run_daily(send_signal, time=time(13, 30))  # 20:30 WIB
+
+    print("Bot aktif dan berjalan...")
+    await app.run_polling()
 
 if __name__ == "__main__":
     import nest_asyncio
