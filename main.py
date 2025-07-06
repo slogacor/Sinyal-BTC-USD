@@ -17,57 +17,38 @@ import logging
 import asyncio
 import json
 import time as t
-import websockets
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta, time, timezone
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+# Tambahan import untuk tradingview_ta async wrapper
+from tradingview_ta import TA_Handler, Interval
+
+
 BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
 CHAT_ID = "-1002883903673"
 signal_history = []
+
 
 # === UTILITY ===
 def utc_to_wib(utc_dt):
     return utc_dt + timedelta(hours=7)
 
 
-# === WEBSOCKET TRADINGVIEW ===
-symbol_map = {
-    "BTCUSD": "OANDA:BTCUSD"
-}
-
+# === FETCH PRICE pakai tradingview_ta (async-friendly) ===
 async def fetch_tv_price(symbol="BTCUSD"):
-    tv_symbol = symbol_map.get(symbol.upper(), f"OANDA:{symbol.upper()}")
-    session = f"qs_{int(t.time()*1000)}"
-
-    async with websockets.connect("wss://data.tradingview.com/socket.io/websocket", ping_interval=None) as ws:
-        def send(payload):
-            msg = f"~m~{len(payload)}~m~{payload}"
-            return msg
-
-        await ws.send(send(json.dumps({"m": "set_auth_token", "p": ["unauthorized"]})))
-        await ws.send(send(json.dumps({"m": "chart_create_session", "p": [session, ""]})))
-        await ws.send(send(json.dumps({"m": "quote_create_session", "p": [session]})))
-        await ws.send(send(json.dumps({"m": "quote_add_symbols", "p": [session, tv_symbol]})))
-        await ws.send(send(json.dumps({"m": "quote_fast_symbols", "p": [session, tv_symbol]})))
-
-        price = None
-        for _ in range(30):  # max 3s polling
-            response = await ws.recv()
-            if "price" in response:
-                try:
-                    payload_start = response.find("{")
-                    payload = json.loads(response[payload_start:])
-                    data = payload.get("p", [{}])[0]
-                    price = data.get("lp")
-                    if price:
-                        return float(price)
-                except:
-                    continue
-            await asyncio.sleep(0.1)
-
-        return None
+    def get_price():
+        handler = TA_Handler(
+            symbol=symbol,
+            screener="forex",
+            exchange="EXNESS",
+            interval=Interval.INTERVAL_1_MINUTE
+        )
+        analysis = handler.get_analysis()
+        return analysis.indicators['close']
+    price = await asyncio.to_thread(get_price)
+    return price
 
 
 # === ANALISIS DAN SINYAL ===
@@ -229,32 +210,47 @@ async def do_send_signal(app):
 async def start(update, context):
     await update.message.reply_text("✅ Bot sinyal BTC/USD aktif!")
 
-async def send_signal(context):
-    await do_send_signal(context.application)
 
-async def get_price(update, context):
-    price = await fetch_tv_price("BTCUSD")
-    if price:
-        await update.message.reply_text(f"💰 Harga BTC/USD (Forex): {round(price, 2)}")
-    else:
-        await update.message.reply_text("❌ Gagal mengambil harga BTC/USD.")
+async def last_signal(update, context):
+    if not signal_history:
+        await update.message.reply_text("Belum ada sinyal.")
+        return
+    last = signal_history[-1]
+    emoji = "🔹" if last["signal"] == "buy" else "🔻"
+    msg = (
+        f"Sinyal terakhir:\n"
+        f"{emoji} {last['signal'].upper()} ({last['strength']})\n"
+        f"Entry: {last['entry_price']}\n"
+        f"TP1: {last['tp1_price']} (+{last['tp1']} pips)\n"
+        f"TP2: {last['tp2_price']} (+{last['tp2']} pips)\n"
+        f"SL: {last['sl_price']} (-{last['sl']} pips)\n"
+        f"Waktu: {last['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
+        f"Hasil: {last['result']} ({last['pips']} pips)"
+    )
+    await update.message.reply_text(msg)
 
-# === BOT ENTRY POINT ===
-async def main():
-    keep_alive()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("price", get_price))
-
-    app.job_queue.run_daily(send_signal, time=time(0, 30))   # 07:30 WIB
-    app.job_queue.run_daily(send_signal, time=time(6, 30))   # 13:30 WIB
-    app.job_queue.run_daily(send_signal, time=time(13, 30))  # 20:30 WIB
-
-    print("Bot aktif dan berjalan...")
-    await app.run_polling()
-
+# === MAIN ===
 if __name__ == "__main__":
-    import nest_asyncio
-    nest_asyncio.apply()
-    asyncio.run(main())
+    keep_alive()
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+    )
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("last_signal", last_signal))
+
+    # Schedule kirim sinyal setiap 5 menit
+    async def periodic_signal():
+        while True:
+            try:
+                await do_send_signal(application)
+            except Exception as e:
+                print(f"Error saat kirim sinyal: {e}")
+            await asyncio.sleep(300)  # 5 menit
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(periodic_signal())
+
+    application.run_polling()
