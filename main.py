@@ -228,12 +228,13 @@ async def last_signal(update, context):
     )
     await update.message.reply_text(msg)
 
+# Tambahan command baru /price
 async def price(update, context):
     price = await fetch_tv_price("BTCUSD")
     if price:
         await update.message.reply_text(f"Harga BTC/USD saat ini: {price}")
     else:
-        await update.message.reply_text("Gagal mendapatkan harga saat ini.")
+        await update.message.reply_text("Gagal mendapatkan harga BTC/USD saat ini.")
 
 
 # === MAIN ===
@@ -246,7 +247,7 @@ if __name__ == "__main__":
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("last_signal", last_signal))
-    application.add_handler(CommandHandler("price", price))
+    application.add_handler(CommandHandler("price", price))  # Daftarkan command /price
 
     # Schedule kirim sinyal setiap 5 menit
     async def periodic_signal():
