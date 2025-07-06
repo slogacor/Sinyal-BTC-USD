@@ -1,62 +1,51 @@
-# === KEEP ALIVE UNTUK RAILWAY ===
-from flask import Flask
-from threading import Thread
-
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot is alive!"
-
-def keep_alive():
-    Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
-
-
-# === BOT UTAMA ===
 import logging
 import asyncio
-import json
-import time as t
+from flask import Flask
+from threading import Thread
+from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta, time, timezone
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-
-# Tambahan import untuk tradingview_ta async wrapper
+from telegram.ext import ApplicationBuilder, CommandHandler
 from tradingview_ta import TA_Handler, Interval
 
-
+# === KONFIGURASI ===
 BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
 CHAT_ID = "-1002883903673"
 signal_history = []
 
+# === FLASK KEEP ALIVE UNTUK RAILWAY ===
+app = Flask(__name__)
 
-# === UTILITY ===
+@app.route('/')
+def home():
+    return "✅ Bot is alive!"
+
+def keep_alive():
+    t = Thread(target=lambda: app.run(host='0.0.0.0', port=8080), daemon=True)
+    t.start()
+
+# === UTILITAS WAKTU ===
 def utc_to_wib(utc_dt):
     return utc_dt + timedelta(hours=7)
 
-
-# === FETCH PRICE pakai tradingview_ta (async-friendly) ===
+# === AMBIL HARGA REAL-TIME TRADINGVIEW ===
 async def fetch_tv_price(symbol="BTCUSD"):
     def get_price():
         handler = TA_Handler(
             symbol=symbol,
             screener="forex",
-            exchange="EXNESS",
+            exchange="EXNESS",  # Ubah sesuai provider harga real-time kamu
             interval=Interval.INTERVAL_1_MINUTE
         )
         analysis = handler.get_analysis()
         return analysis.indicators['close']
-    price = await asyncio.to_thread(get_price)
-    return price
+    return await asyncio.to_thread(get_price)
 
-
-# === ANALISIS DAN SINYAL ===
+# === DUMMY CANDLE GENERATOR (simulasi data 5m) ===
 def fetch_klines_dummy(symbol="BTCUSD", interval="5m", limit=100):
-    # Dummy data generator — ganti kalau sudah punya API untuk candle dari OANDA
     now = datetime.now(tz=timezone.utc)
-    candles = []
     price = 60000
+    candles = []
     for i in range(limit):
         ts = now - timedelta(minutes=5 * (limit - i))
         candles.append({
@@ -70,18 +59,18 @@ def fetch_klines_dummy(symbol="BTCUSD", interval="5m", limit=100):
         })
     return candles
 
+# === TEKNIKAL ANALISA ===
 def bollinger_bands(prices, window=20, no_of_std=2):
-    sma = pd.Series(prices).rolling(window).mean()
-    std = pd.Series(prices).rolling(window).std()
-    upper_band = sma + no_of_std * std
-    lower_band = sma - no_of_std * std
-    return sma, upper_band, lower_band
+    series = pd.Series(prices)
+    sma = series.rolling(window).mean()
+    std = series.rolling(window).std()
+    return sma, sma + no_of_std * std, sma - no_of_std * std
 
 def stochastic_oscillator(highs, lows, closes, k_period=14, d_period=3):
-    low_min = pd.Series(lows).rolling(window=k_period).min()
-    high_max = pd.Series(highs).rolling(window=k_period).max()
+    low_min = pd.Series(lows).rolling(k_period).min()
+    high_max = pd.Series(highs).rolling(k_period).max()
     k = 100 * ((pd.Series(closes) - low_min) / (high_max - low_min))
-    d = k.rolling(window=d_period).mean()
+    d = k.rolling(d_period).mean()
     return k, d
 
 def detect_snrs(candles):
@@ -103,8 +92,7 @@ def trend_direction(candles):
         return "up"
     elif sma_short.iloc[-1] < sma_long.iloc[-1]:
         return "down"
-    else:
-        return "sideways"
+    return "sideways"
 
 def detect_signal(candles):
     closes = [c['close'] for c in candles]
@@ -132,26 +120,16 @@ def detect_signal(candles):
         signal = "sell"
         strength = "kuat" if (last_k - last_d) > 7 else "sedang"
 
-    if not signal:
+    if not signal or (signal == "buy" and trend_direction(candles) != "up") or (signal == "sell" and trend_direction(candles) != "down"):
         return None
-
-    trend = trend_direction(candles)
-    if (signal == "buy" and trend != "up") or (signal == "sell" and trend != "down"):
-        return None
-
-    tp1_pips = np.random.randint(45, 65)
-    tp2_pips = np.random.randint(65, 90)
-    sl_pips = np.random.randint(20, 30)
 
     return {
         "signal": signal,
         "strength": strength,
-        "tp1": tp1_pips,
-        "tp2": tp2_pips,
-        "sl": sl_pips,
+        "tp1": np.random.randint(45, 65),
+        "tp2": np.random.randint(65, 90),
+        "sl": np.random.randint(20, 30),
         "time": utc_to_wib(candles[-1]["close_time"]),
-        "result": None,
-        "pips": 0
     }
 
 def simulate_result(sig):
@@ -160,36 +138,31 @@ def simulate_result(sig):
     sig["result"] = result
     sig["pips"] = sig["tp1"] if result == "TP1" else sig["tp2"] if result == "TP2" else -sig["sl"]
 
-
-# === SIGNAL EXECUTION ===
+# === EXECUTE & KIRIM SIGNAL ===
 async def do_send_signal(app):
     global signal_history
-    candles = fetch_klines_dummy("BTCUSD", "5m", 100)
+    candles = fetch_klines_dummy()
     signal = detect_signal(candles)
     if not signal:
         return
 
-    price = await fetch_tv_price("BTCUSD")
-    if not price:
-        await app.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil harga BTC/USD dari TradingView")
-        return
-
+    price = await fetch_tv_price()
     pip_size = 0.01 * 0.1
-    if signal["signal"] == "buy":
-        tp1_price = round(price + signal["tp1"] * pip_size, 2)
-        tp2_price = round(price + signal["tp2"] * pip_size, 2)
-        sl_price = round(price - signal["sl"] * pip_size, 2)
-    else:
-        tp1_price = round(price - signal["tp1"] * pip_size, 2)
-        tp2_price = round(price - signal["tp2"] * pip_size, 2)
-        sl_price = round(price + signal["sl"] * pip_size, 2)
 
-    signal.update({
-        "entry_price": round(price, 2),
-        "tp1_price": tp1_price,
-        "tp2_price": tp2_price,
-        "sl_price": sl_price,
-    })
+    if signal["signal"] == "buy":
+        signal.update({
+            "entry_price": round(price, 2),
+            "tp1_price": round(price + signal["tp1"] * pip_size, 2),
+            "tp2_price": round(price + signal["tp2"] * pip_size, 2),
+            "sl_price": round(price - signal["sl"] * pip_size, 2),
+        })
+    else:
+        signal.update({
+            "entry_price": round(price, 2),
+            "tp1_price": round(price - signal["tp1"] * pip_size, 2),
+            "tp2_price": round(price - signal["tp2"] * pip_size, 2),
+            "sl_price": round(price + signal["sl"] * pip_size, 2),
+        })
 
     simulate_result(signal)
     signal_history.append(signal)
@@ -205,60 +178,46 @@ async def do_send_signal(app):
     )
     await app.bot.send_message(chat_id=CHAT_ID, text=msg)
 
-
-# === COMMAND HANDLERS ===
-async def start(update, context):
+# === COMMANDS ===
+async def cmd_start(update, context):
     await update.message.reply_text("✅ Bot sinyal BTC/USD aktif!")
 
-async def last_signal(update, context):
+async def cmd_price(update, context):
+    price = await fetch_tv_price()
+    await update.message.reply_text(f"Harga BTC/USD saat ini: {price}")
+
+async def cmd_last_signal(update, context):
     if not signal_history:
         await update.message.reply_text("Belum ada sinyal.")
         return
-    last = signal_history[-1]
-    emoji = "🔹" if last["signal"] == "buy" else "🔻"
-    msg = (
-        f"Sinyal terakhir:\n"
-        f"{emoji} {last['signal'].upper()} ({last['strength']})\n"
-        f"Entry: {last['entry_price']}\n"
-        f"TP1: {last['tp1_price']} (+{last['tp1']} pips)\n"
-        f"TP2: {last['tp2_price']} (+{last['tp2']} pips)\n"
-        f"SL: {last['sl_price']} (-{last['sl']} pips)\n"
-        f"Waktu: {last['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
-        f"Hasil: {last['result']} ({last['pips']} pips)"
+    s = signal_history[-1]
+    emoji = "🔹" if s["signal"] == "buy" else "🔻"
+    await update.message.reply_text(
+        f"Sinyal terakhir:\n{emoji} {s['signal'].upper()} ({s['strength']})\n"
+        f"Entry: {s['entry_price']}\nTP1: {s['tp1_price']}, TP2: {s['tp2_price']}, SL: {s['sl_price']}\n"
+        f"Hasil: {s['result']} ({s['pips']} pips)\nWaktu: {s['time'].strftime('%Y-%m-%d %H:%M:%S WIB')}"
     )
-    await update.message.reply_text(msg)
 
-# Tambahan command baru /price
-async def price(update, context):
-    price = await fetch_tv_price("BTCUSD")
-    if price:
-        await update.message.reply_text(f"Harga BTC/USD saat ini: {price}")
-    else:
-        await update.message.reply_text("Gagal mendapatkan harga BTC/USD saat ini.")
-
-
-# === MAIN ===
-if __name__ == "__main__":
+# === MAIN BOT ===
+async def main():
     keep_alive()
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
-    )
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    logging.basicConfig(level=logging.INFO)
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("last_signal", last_signal))
-    application.add_handler(CommandHandler("price", price))  # Daftarkan command /price
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("price", cmd_price))
+    app.add_handler(CommandHandler("last_signal", cmd_last_signal))
 
-    # Schedule kirim sinyal setiap 5 menit
-    async def periodic_signal():
+    async def loop_signal():
         while True:
             try:
-                await do_send_signal(application)
+                await do_send_signal(app)
             except Exception as e:
-                print(f"Error saat kirim sinyal: {e}")
-            await asyncio.sleep(300)  # 5 menit
+                logging.error(f"❌ Error signal: {e}")
+            await asyncio.sleep(300)  # setiap 5 menit
 
-    loop = asyncio.get_event_loop()
-    loop.create_task(periodic_signal())
+    asyncio.create_task(loop_signal())
+    await app.run_polling()
 
-    application.run_polling()
+if __name__ == "__main__":
+    asyncio.run(main())
