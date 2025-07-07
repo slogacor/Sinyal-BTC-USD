@@ -19,6 +19,7 @@ API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 
 signals_buffer = []
 last_signal_price = None
+last_failed = False  # Flag untuk status error terakhir
 
 # === SERVER KEEP ALIVE ===
 app = Flask(__name__)
@@ -58,11 +59,6 @@ def generate_signal(df):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    # Kriteria golden moment yang sangat ketat:
-    # RSI oversold (<=30) atau overbought (>=70)
-    # Harga crossing EMA9 ke atas (BUY) atau ke bawah (SELL)
-    # EMA9 di atas SMA50 untuk BUY, di bawah untuk SELL
-
     signal = None
     reason = ""
 
@@ -82,8 +78,6 @@ def generate_signal(df):
     return signal, reason, last
 
 def calculate_tp_sl(signal, price, atr):
-    pip_value = 0.01  # 1 pip di XAU/USD dianggap 0.01
-    # TP lebar, SL disesuaikan dari ATR
     if signal == "BUY":
         tp1 = round(price + (atr * 2.5), 2)
         tp2 = round(price + (atr * 4), 2)
@@ -99,16 +93,22 @@ def format_status():
 
 # === PENGIRIM SINYAL ===
 async def send_signal(context):
+    global last_failed
+
     candles = fetch_twelvedata("XAU/USD")
     if candles is None:
-        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD.")
+        if not last_failed:
+            last_failed = True
+            await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD. Bot akan mencoba lagi dalam 1 jam.")
+        await asyncio.sleep(3600)  # Jika gagal, tunggu 1 jam sebelum lanjut
         return
+
+    last_failed = False  # Reset error flag kalau berhasil
 
     df = prepare_df(candles)
     signal, reason, last = generate_signal(df)
     if signal is None:
-        # Tidak ada golden moment, tidak kirim apapun
-        return
+        return  # Tidak ada sinyal, tidak kirim apa-apa
 
     price = last["close"]
     tp1, tp2, sl = calculate_tp_sl(signal, price, last["atr"])
@@ -138,7 +138,6 @@ async def rekap_harian(context):
         return
 
     df = prepare_df(candles).tail(60)
-    # Rekap sederhana: hitung berapa candle bullish dan bearish sebagai gambaran
     bullish = sum(1 for i in df.itertuples() if i.close > i.open)
     bearish = sum(1 for i in df.itertuples() if i.close < i.open)
 
@@ -163,18 +162,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def sinyal_job():
         while True:
             await send_signal(context)
-            await asyncio.sleep(300)  # cek setiap 5 menit sekali
+            await asyncio.sleep(300)  # Cek setiap 5 menit
 
     async def jadwal_rekap():
         while True:
             jakarta = pytz.timezone("Asia/Jakarta")
             now = datetime.now(jakarta)
 
-            # Rekap harian Senin - Jumat jam 21:59 WIB
             if now.weekday() < 5 and now.hour == 21 and now.minute == 59:
                 await rekap_harian(context)
 
-            # Market close: Jumat 22:00 WIB
             if now.weekday() == 4 and now.hour == 22 and now.minute == 0:
                 await context.bot.send_message(chat_id=CHAT_ID, text=(
                     "📴 *Market Close*\n"
@@ -182,9 +179,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "🔕 Bot berhenti mengirim sinyal akhir pekan.\n"
                     "📅 Bot aktif kembali Senin pukul 09:00 WIB."
                 ))
-                await asyncio.sleep(60 * 60 * 24 * 2)  # Tidur 2 hari
+                await asyncio.sleep(60 * 60 * 24 * 2)
 
-            # Market open: Senin 09:00 WIB
             if now.weekday() == 0 and now.hour == 9 and now.minute == 0:
                 await context.bot.send_message(chat_id=CHAT_ID, text=(
                     "✅ *Bot Aktif Kembali*\n"
@@ -200,9 +196,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === RUN BOT ===
 if __name__ == "__main__":
-    keep_alive()  # Start flask keepalive server
+    keep_alive()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     print("Bot started...")
-
     app.run_polling()
