@@ -17,6 +17,9 @@ CHAT_ID = "-1002883903673"
 AUTHORIZED_USER_ID = 1305881282
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 
+signals_buffer = []
+last_signal_price = None
+
 # === SERVER KEEP ALIVE ===
 app = Flask(__name__)
 @app.route('/')
@@ -41,10 +44,6 @@ def prepare_df(data):
     df = df.astype(float)
     return df
 
-def confirm_trend_from_last_3(df):
-    last_3 = df.tail(3)
-    return all(last_3["close"] > last_3["open"]) or all(last_3["close"] < last_3["open"])
-
 def generate_signal(df):
     rsi = RSIIndicator(df["close"], window=14).rsi()
     ema = EMAIndicator(df["close"], window=9).ema_indicator()
@@ -59,41 +58,44 @@ def generate_signal(df):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    score = 0
-    reasons = []
+    # Kriteria golden moment yang sangat ketat:
+    # RSI oversold (<=30) atau overbought (>=70)
+    # Harga crossing EMA9 ke atas (BUY) atau ke bawah (SELL)
+    # EMA9 di atas SMA50 untuk BUY, di bawah untuk SELL
 
-    if last["rsi"] < 30 and last["close"] > last["ema"]:
-        score += 1
-        reasons.append("RSI menunjukkan kondisi oversold (<30), menandakan potensi pembalikan ke atas, dan harga menutup di atas EMA9 sebagai sinyal bullish.")
-    if last["ema"] > last["sma"]:
-        score += 1
-        reasons.append("EMA9 lebih tinggi dari SMA50, menandakan tren jangka pendek sedang naik.")
-    if confirm_trend_from_last_3(df):
-        score += 1
-        reasons.append("Tiga candle terakhir menunjukkan konsistensi arah yang sama, menguatkan sinyal tren.")
+    signal = None
+    reason = ""
 
-    if score == 3:
-        signal = "BUY" if last["close"] > prev["close"] else "SELL"
-    else:
-        signal = None
+    if last["rsi"] <= 30 and last["close"] > last["ema"] and last["ema"] > last["sma"]:
+        signal = "BUY"
+        reason = (
+            "RSI menunjukkan oversold (<=30), harga menembus EMA9 ke atas, dan EMA9 di atas SMA50.\n"
+            "Ini sinyal kuat pembalikan ke atas (bullish reversal)."
+        )
+    elif last["rsi"] >= 70 and last["close"] < last["ema"] and last["ema"] < last["sma"]:
+        signal = "SELL"
+        reason = (
+            "RSI menunjukkan overbought (>=70), harga menembus EMA9 ke bawah, dan EMA9 di bawah SMA50.\n"
+            "Ini sinyal kuat pembalikan ke bawah (bearish reversal)."
+        )
 
-    return signal, score, reasons, last
+    return signal, reason, last
 
 def calculate_tp_sl(signal, price, atr):
+    pip_value = 0.01  # 1 pip di XAU/USD dianggap 0.01
+    # TP lebar, SL disesuaikan dari ATR
     if signal == "BUY":
-        tp1 = round(price + (atr * 3), 2)
+        tp1 = round(price + (atr * 2.5), 2)
         tp2 = round(price + (atr * 4), 2)
-        sl = round(price - (atr * 1.5), 2)
-    elif signal == "SELL":
-        tp1 = round(price - (atr * 3), 2)
-        tp2 = round(price - (atr * 4), 2)
-        sl = round(price + (atr * 1.5), 2)
+        sl = round(price - (atr * 1.2), 2)
     else:
-        tp1 = tp2 = sl = None
+        tp1 = round(price - (atr * 2.5), 2)
+        tp2 = round(price - (atr * 4), 2)
+        sl = round(price + (atr * 1.2), 2)
     return tp1, tp2, sl
 
-def format_status(score):
-    return "🟢 GOLDEN MOMENT" if score == 3 else "🔴 NO SIGNAL"
+def format_status():
+    return "✨ *Golden Moment* - Sinyal sangat akurat dan kuat."
 
 # === PENGIRIM SINYAL ===
 async def send_signal(context):
@@ -103,15 +105,14 @@ async def send_signal(context):
         return
 
     df = prepare_df(candles)
-    signal, score, reasons, last = generate_signal(df)
+    signal, reason, last = generate_signal(df)
     if signal is None:
+        # Tidak ada golden moment, tidak kirim apapun
         return
 
     price = last["close"]
     tp1, tp2, sl = calculate_tp_sl(signal, price, last["atr"])
     time_now = datetime.now(pytz.timezone("Asia/Jakarta")).strftime("%H:%M:%S")
-
-    reasons_text = "\n".join(f"• {r}" for r in reasons)
 
     msg = (
         f"📡 *Sinyal XAU/USD*\n"
@@ -120,8 +121,8 @@ async def send_signal(context):
         f"💰 Harga entry: `{price}`\n"
         f"🎯 TP1: `{tp1}` | TP2: `{tp2}`\n"
         f"🛑 SL: `{sl}`\n"
-        f"📊 Status: {format_status(score)}\n"
-        f"🔍 *Alasan sinyal:*\n{reasons_text}"
+        f"{format_status()}\n"
+        f"🔍 *Alasan sinyal:*\n{reason}"
     )
 
     await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
@@ -137,15 +138,15 @@ async def rekap_harian(context):
         return
 
     df = prepare_df(candles).tail(60)
-    tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
-    sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
+    # Rekap sederhana: hitung berapa candle bullish dan bearish sebagai gambaran
+    bullish = sum(1 for i in df.itertuples() if i.close > i.open)
+    bearish = sum(1 for i in df.itertuples() if i.close < i.open)
 
     msg = (
         f"📊 *Rekap Harian XAU/USD - {now.strftime('%A, %d %B %Y')}*\n"
         f"🕙 Waktu: {now.strftime('%H:%M')} WIB\n"
-        f"🎯 Total TP: {tp_total} pips\n"
-        f"🛑 Total SL: {sl_total} pips\n"
-        f"📈 Berdasarkan 5-menit candle terakhir 5 jam\n"
+        f"📈 Candle Bullish: {bullish}\n"
+        f"📉 Candle Bearish: {bearish}\n"
         f"📌 Sinyal ini sebagai evaluasi dan referensi trading harian."
     )
 
@@ -157,60 +158,51 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Anda tidak diizinkan menjalankan bot ini.")
         return
 
-    await update.message.reply_text("✅ Bot aktif. Sinyal akan dikirim setiap 2 jam sekali jika golden moment.")
+    await update.message.reply_text("✅ Bot aktif. Sinyal akan dikirim saat golden moment ditemukan.")
 
     async def sinyal_job():
         while True:
-            await context.bot.send_message(chat_id=CHAT_ID, text="📣 *Ready signal 5 menit lagi!* Bersiap entry.")
-            await asyncio.sleep(5 * 60)
             await send_signal(context)
-            await asyncio.sleep(2 * 60 * 60 - 5 * 60)
+            await asyncio.sleep(300)  # cek setiap 5 menit sekali
 
     async def jadwal_rekap():
         while True:
             jakarta = pytz.timezone("Asia/Jakarta")
             now = datetime.now(jakarta)
 
+            # Rekap harian Senin - Jumat jam 21:59 WIB
             if now.weekday() < 5 and now.hour == 21 and now.minute == 59:
                 await rekap_harian(context)
 
+            # Market close: Jumat 22:00 WIB
             if now.weekday() == 4 and now.hour == 22 and now.minute == 0:
-                await context.bot.send_message(chat_id=CHAT_ID, text=
+                await context.bot.send_message(chat_id=CHAT_ID, text=(
                     "📴 *Market Close*\n"
                     "Hari ini Jumat pukul 22:00 WIB, pasar forex telah tutup.\n"
                     "🔕 Bot berhenti mengirim sinyal akhir pekan.\n"
                     "📅 Bot aktif kembali Senin pukul 09:00 WIB."
-                )
-                await asyncio.sleep(60 * 60 * 24 * 2)
+                ))
+                await asyncio.sleep(60 * 60 * 24 * 2)  # Tidur 2 hari
 
+            # Market open: Senin 09:00 WIB
             if now.weekday() == 0 and now.hour == 9 and now.minute == 0:
-                await context.bot.send_message(chat_id=CHAT_ID, text=
+                await context.bot.send_message(chat_id=CHAT_ID, text=(
                     "✅ *Bot Aktif Kembali*\n"
                     "Hari ini Senin, pasar telah dibuka kembali.\n"
-                    "🤖 Bot siap mengirim sinyal setiap 2 jam.\n"
+                    "🤖 Bot siap mengirim sinyal saat golden moment ditemukan.\n"
                     "Selamat trading!"
-                )
+                ))
 
             await asyncio.sleep(60)
 
     asyncio.create_task(sinyal_job())
     asyncio.create_task(jadwal_rekap())
 
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    candles = fetch_twelvedata("XAU/USD", "1min", 1)
-    if candles:
-        price = candles[-1]["close"]
-        await update.message.reply_text(f"Harga XAU/USD sekarang: {price}")
-    else:
-        await update.message.reply_text("❌ Tidak bisa mengambil harga.")
-
-# === MAIN ===
+# === RUN BOT ===
 if __name__ == "__main__":
-    keep_alive()
+    keep_alive()  # Start flask keepalive server
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    print("Bot started...")
 
-    app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app_bot.add_handler(CommandHandler("start", start))
-    app_bot.add_handler(CommandHandler("price", price))
-
-    app_bot.run_polling()
+    app.run_polling()
