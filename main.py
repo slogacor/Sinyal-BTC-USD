@@ -1,246 +1,210 @@
 from flask import Flask
 from threading import Thread
 import requests
-import logging
-from datetime import datetime, timedelta, time
-import asyncio
-import pandas as pd
-import ta
+from datetime import datetime, time, timedelta
 import pytz
+import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from ta.trend import EMAIndicator, SMAIndicator
+from ta.momentum import RSIIndicator
+from ta.volatility import AverageTrueRange
+import pandas as pd
 
-# === KONFIGURASI ===
+# === CONFIGURASI ===
 BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
 CHAT_ID = "-1002883903673"
 AUTHORIZED_USER_ID = 1305881282
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 signals_buffer = []
 
-# === KEEP ALIVE ===
-app = Flask('')
+# === KEEP ALIVE SERVER ===
+app = Flask(__name__)
 @app.route('/')
 def home():
-    return "Bot is alive!"
+    return "Bot is running"
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
-def fetch_twelvedata(symbol="EUR/USD", interval="5min", outputsize=60):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={API_KEY}"
-    try:
-        res = requests.get(url)
-        data = res.json()
-        if "values" not in data:
-            logging.error("Data tidak tersedia: %s", data.get("message", ""))
-            return None
-        candles = [{
-            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S"),
-            "open": float(d["open"]),
-            "high": float(d["high"]),
-            "low": float(d["low"]),
-            "close": float(d["close"])
-        } for d in data["values"]]
-        return candles
-    except Exception as e:
-        logging.error(f"Gagal ambil data dari Twelve Data: {e}")
+# === FUNGSI DATA & TEKNIKAL ===
+def fetch_twelvedata(symbol="EUR/USD", interval="5min", count=100):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY}&outputsize={count}&format=JSON"
+    response = requests.get(url)
+    if response.status_code != 200:
         return None
+    data = response.json().get("values", [])
+    return data[::-1] if data else None
 
-def prepare_df(candles):
-    df = pd.DataFrame(candles)
-    df = df.sort_values("datetime").reset_index(drop=True)
+def prepare_df(data):
+    df = pd.DataFrame(data)
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df.set_index("datetime", inplace=True)
+    df = df.astype(float)
     return df
 
 def find_snr(df):
-    recent = df.tail(30)
-    return recent["low"].min(), recent["high"].max()
+    highs = df["high"].tail(30)
+    lows = df["low"].tail(30)
+    return highs.max(), lows.min()
 
 def confirm_trend_from_last_3(df):
-    candles = df.tail(4)
-    if len(candles) < 4:
-        return None
-    c1, c2, c3 = candles.iloc[-4:-1].to_dict('records')
-    uptrend = all(c["close"] > c["open"] for c in [c1, c2, c3])
-    downtrend = all(c["close"] < c["open"] for c in [c1, c2, c3])
-    return "BUY" if uptrend else "SELL" if downtrend else None
+    last_3 = df.tail(3)
+    return all(last_3["close"] > last_3["open"]) or all(last_3["close"] < last_3["open"])
 
 def generate_signal(df):
-    df = df.copy()
-    df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
-    df["ma"] = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator()
-    df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
-    df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+    rsi = RSIIndicator(df["close"], window=14).rsi()
+    ema = EMAIndicator(df["close"], window=9).ema_indicator()
+    sma = SMAIndicator(df["close"], window=50).sma_indicator()
+    atr = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+    df["rsi"] = rsi
+    df["ema"] = ema
+    df["sma"] = sma
+    df["atr"] = atr
+    df.dropna(inplace=True)
 
-    support, resistance = find_snr(df)
-    last_close = df["close"].iloc[-1]
-    rsi_now = df["rsi"].iloc[-1]
-    ma = df["ma"].iloc[-1]
-    ema = df["ema"].iloc[-1]
-    atr = df["atr"].iloc[-1]
-
-    trend = confirm_trend_from_last_3(df)
-    if not trend:
-        if atr > 0.2:
-            return ("LEMAH", last_close, rsi_now, atr, ma, ema), 1, support, resistance
-        else:
-            return None, 0, support, resistance
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    snr_res, snr_sup = find_snr(df)
 
     score = 0
-    if atr > 0.2: score += 1
-    if trend == "BUY" and last_close > ma and last_close > ema and rsi_now < 70:
-        score += 2
-    elif trend == "SELL" and last_close < ma and last_close < ema and rsi_now > 30:
-        score += 2
+    note = ""
 
-    if score >= 1:
-        return (trend, last_close, rsi_now, atr, ma, ema), score, support, resistance
-    return None, score, support, resistance
+    if last["rsi"] < 30 and last["close"] > last["ema"]:
+        score += 1
+        note += "✅ RSI oversold + harga di atas EMA\n"
+    if last["ema"] > last["sma"]:
+        score += 1
+        note += "✅ EMA > SMA (tren naik)\n"
+    if confirm_trend_from_last_3(df):
+        score += 1
+        note += "✅ Tiga candle mendukung arah\n"
 
-def calculate_tp_sl(signal, entry, score):
-    if score >= 3:
-        tp1_pips, tp2_pips, sl_pips = 30, 55, 25
+    signal = None
+    if score == 3:
+        signal = "BUY" if last["close"] > prev["close"] else "SELL"
     elif score == 2:
-        tp1_pips, tp2_pips, sl_pips = 25, 40, 25
+        signal = "BUY" if last["close"] > last["open"] else "SELL"
+
+    return signal, score, note, last, snr_res, snr_sup
+
+def calculate_tp_sl(signal, price, score, atr):
+    atr_pips = round(atr * 10000)
+    buffer = 5
+    if signal == "BUY":
+        tp1 = round(price + (atr * (1 + score / 2)), 5)
+        tp2 = round(price + (atr * (1.5 + score / 2)), 5)
+        sl = round(price - (atr * (0.8)), 5)
     else:
-        tp1_pips, tp2_pips, sl_pips = 15, 25, 25
-
-    tp1 = entry + tp1_pips * 0.0001 if signal == "BUY" else entry - tp1_pips * 0.0001
-    tp2 = entry + tp2_pips * 0.0001 if signal == "BUY" else entry - tp2_pips * 0.0001
-    sl = entry - sl_pips * 0.0001 if signal == "BUY" else entry + sl_pips * 0.0001
-
-    return tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips
-
-def check_tp_hit(df, signal, tp1, tp2, sl):
-    hits = {"TP1": False, "TP2": False, "SL": False}
-    for candle in df.itertuples():
-        high = candle.high
-        low = candle.low
-        if signal == "BUY":
-            if low <= sl: hits["SL"] = True
-            if high >= tp1: hits["TP1"] = True
-            if high >= tp2: hits["TP2"] = True
-        else:
-            if high >= sl: hits["SL"] = True
-            if low <= tp1: hits["TP1"] = True
-            if low <= tp2: hits["TP2"] = True
-    return hits
-
-def adjust_entry(signal, entry, last_close):
-    if signal == "BUY" and entry >= last_close:
-        entry = last_close - 0.0001
-    elif signal == "SELL" and entry <= last_close:
-        entry = last_close + 0.0001
-    return round(entry, 5)
+        tp1 = round(price - (atr * (1 + score / 2)), 5)
+        tp2 = round(price - (atr * (1.5 + score / 2)), 5)
+        sl = round(price + (atr * (0.8)), 5)
+    return tp1, tp2, sl
 
 def format_status(score):
-    return "GOLDEN MOMENT 🌟" if score >= 3 else "MODERATE ⚠️" if score == 2 else "LEMAH ⚠️ Harap berhati-hati"
+    return "🟢 KUAT" if score == 3 else "🟡 MODERAT" if score == 2 else "🔴 LEMAH"
 
-def is_weekend(now):
-    return now.weekday() in [5, 6]
-
+# === FUNGSI PENGIRIM SINYAL ===
 async def send_signal(context):
+    candles = fetch_twelvedata()
+    if candles is None:
+        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data EUR/USD.")
+        return
+
+    df = prepare_df(candles)
+    signal, score, note, last, res, sup = generate_signal(df)
+    if not signal:
+        await context.bot.send_message(chat_id=CHAT_ID, text="⏳ Tidak ada sinyal valid saat ini.")
+        return
+
+    price = last["close"]
+    tp1, tp2, sl = calculate_tp_sl(signal, price, score, last["atr"])
+    time_now = datetime.now(pytz.timezone("Asia/Jakarta")).strftime("%H:%M:%S")
+
+    alert = ""
+    if score < 3:
+        alert = "\n⚠️ *Hati-hati*, sinyal tidak terlalu kuat.\n"
+
+    msg = (
+        f"📡 *Sinyal EUR/USD*\n"
+        f"🕒 Waktu: {time_now} WIB\n"
+        f"📈 Arah: *{signal}*\n"
+        f"💰 Entry: `{price}`\n"
+        f"🎯 TP1: `{tp1}` | TP2: `{tp2}`\n"
+        f"🛑 SL: `{sl}`\n"
+        f"{alert}"
+        f"📊 Status: {format_status(score)}\n"
+        f"🔍 Analisa:\n{note}"
+    )
+
+    await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+    signals_buffer.append({"signal": signal, "price": price})
+
+# === REKAP HARIAN ===
+async def rekap_harian(context):
     jakarta = pytz.timezone("Asia/Jakarta")
     now = datetime.now(jakarta)
-    now_minus3 = now - timedelta(hours=3)
-
-    if now.weekday() == 4 and now.time() >= time(22, 0):
-        candles = fetch_twelvedata("EUR/USD", "5min", 100)
-        if candles is None:
-            await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data untuk rekap akhir Jumat.")
-            return
-        df = prepare_df(candles).tail(5)
-        tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
-        sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
-        msg = (
-            f"📊 *Rekap 5 Candle Terakhir Hari Jumat*\n"
-            f"🎯 Total TP: {tp_total} pips\n"
-            f"🛑 Total SL: {sl_total} pips\n"
-            f"🚨 Market tutup hingga Senin 08:00 WIB.\n"
-            f"Selamat weekend 🌴"
-        )
-        await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
-        return
-
-    if is_weekend(now) or (now.weekday() == 0 and now.time() < time(8, 0)):
-        return
-
-    if now.minute % 45 != 0:
+    if now.weekday() >= 5:
         return
 
     candles = fetch_twelvedata("EUR/USD", "5min", 60)
-    if candles is None or len(candles) < 50:
-        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Data candle tidak cukup (butuh 50+).")
+    if candles is None:
+        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data untuk rekap harian.")
         return
-    df = prepare_df(candles)
-    df_analyze = df.copy()
 
-    result, score, support, resistance = generate_signal(df_analyze)
-    if result:
-        signal, entry, rsi, atr, ma, ema = result
-        last_close = df_analyze["close"].iloc[-1]
-        entry = adjust_entry(signal, entry, last_close)
-        tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips = calculate_tp_sl(signal, entry, score)
+    df = prepare_df(candles).tail(60)
+    tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
+    sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
 
-        # Hit Checking dari candle ke-9
-        df_future = df.tail(1)
-        hits = check_tp_hit(df_future, signal, tp1, tp2, sl)
-        hit_text = (
-            f"\n🎯 TP1 HIT ✅" if hits["TP1"] else "" +
-            f"\n🎯 TP2 HIT ✅" if hits["TP2"] else "" +
-            f"\n🛑 SL HIT ❌" if hits["SL"] else ""
-        )
+    msg = (
+        f"📊 *Rekap Harian EUR/USD - {now.strftime('%A, %d %B %Y')}*\n"
+        f"🕙 Waktu: {now.strftime('%H:%M')} WIB\n"
+        f"🎯 Total TP: {tp_total} pips\n"
+        f"🛑 Total SL: {sl_total} pips\n"
+        f"📈 Berdasarkan 5-menit candle terakhir 5 jam\n"
+        f"📌 Sinyal ini sebagai evaluasi dan referensi trading harian."
+    )
 
-        msg = (
-            f"🚨 *Sinyal {signal}* {'⬆️' if signal=='BUY' else '⬇️'} _EUR/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S')} (UTC+7 | -3 jam: {now_minus3.strftime('%H:%M')})\n"
-            f"📊 Status: {format_status(score)}\n"
-            f"⏳ RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
-            f"⚖️ Support: {support:.5f}, Resistance: {resistance:.5f}\n"
-            f"💰 Entry: {entry:.5f}\n"
-            f"🎯 TP1: {tp1:.5f} (+{tp1_pips} pips), TP2: {tp2:.5f} (+{tp2_pips} pips)\n"
-            f"🛑 SL: {sl:.5f} (-{sl_pips} pips)"
-            f"{hit_text}\n"
-            f"⏳ *Eksekusi dilakukan pada candle berikutnya (ke-9)*"
-        )
-        await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
-        signals_buffer.append(signal)
-    else:
-        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Tidak ada sinyal valid.")
+    await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
 
-async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    candles = fetch_twelvedata("EUR/USD", "1min", 1)
-    if candles:
-        last = candles[0]
-        jakarta = pytz.timezone("Asia/Jakarta")
-        dt_jakarta = jakarta.localize(last['datetime'])
-        dt_minus3 = dt_jakarta - timedelta(hours=3)
-        msg = (
-            f"💱 *EUR/USD Price*\n"
-            f"🕒 {dt_jakarta.strftime('%Y-%m-%d %H:%M:%S')} (UTC+7 | -3 jam: {dt_minus3.strftime('%H:%M')})\n"
-            f"🔼 Open: {last['open']:.5f}\n"
-            f"🔽 Close: {last['close']:.5f}\n"
-            f"📈 High: {last['high']:.5f}\n"
-            f"📉 Low: {last['low']:.5f}"
-        )
-        await update.message.reply_text(msg, parse_mode='Markdown')
-    else:
-        await update.message.reply_text("❌ Gagal ambil harga terbaru.")
-
+# === PERINTAH /start & /price ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != AUTHORIZED_USER_ID:
         await update.message.reply_text("❌ Anda tidak diizinkan menjalankan bot ini.")
         return
-    await update.message.reply_text("✅ Bot aktif dan akan mulai mengirim sinyal setiap 45 menit.")
 
-    async def job():
+    await update.message.reply_text("✅ Bot aktif. Sinyal akan dikirim setiap 45 menit.")
+
+    async def sinyal_job():
         while True:
             await send_signal(context)
-            await asyncio.sleep(60)
+            await asyncio.sleep(45 * 60)
 
-    asyncio.create_task(job())
+    async def jadwal_rekap():
+        while True:
+            jakarta = pytz.timezone("Asia/Jakarta")
+            now = datetime.now(jakarta)
+            next_22 = datetime.combine(now.date(), time(22, 0, 0))
+            if now > next_22:
+                next_22 += timedelta(days=1)
+            delay = (next_22 - now).total_seconds()
+            await asyncio.sleep(delay)
+            await rekap_harian(context)
 
-# === MAIN ===
+    asyncio.create_task(sinyal_job())
+    asyncio.create_task(jadwal_rekap())
+
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    candles = fetch_twelvedata("EUR/USD", "1min", 1)
+    if candles:
+        price = candles[-1]["close"]
+        await update.message.reply_text(f"Harga EUR/USD sekarang: {price}")
+    else:
+        await update.message.reply_text("❌ Tidak bisa mengambil harga.")
+
+# === MAIN BOT ===
 if __name__ == "__main__":
     keep_alive()
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("price", cmd_price))
-    application.run_polling()
+    app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("price", price))
+    app_bot.run_polling()
