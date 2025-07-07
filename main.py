@@ -8,6 +8,8 @@ import pandas as pd
 import ta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import pytz
+from dateutil import parser
 
 # --- KONFIGURASI ---
 BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
@@ -15,6 +17,11 @@ CHAT_ID = "-1002883903673"
 AUTHORIZED_USER_ID = 1305881282
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 signals_buffer = []
+
+JAKARTA_TZ = pytz.timezone("Asia/Jakarta")
+
+# --- LOGGING ---
+logging.basicConfig(level=logging.INFO)
 
 # === KEEP ALIVE ===
 app = Flask('')
@@ -33,7 +40,8 @@ def fetch_twelvedata(symbol="EUR/USD", interval="5min", outputsize=100):
             logging.error("Data tidak tersedia: %s", data.get("message", ""))
             return None
         candles = [{
-            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S"),
+            # Parse datetime dari UTC, lalu convert ke Jakarta
+            "datetime": parser.parse(d["datetime"]).replace(tzinfo=timezone.utc).astimezone(JAKARTA_TZ),
             "open": float(d["open"]),
             "high": float(d["high"]),
             "low": float(d["low"]),
@@ -124,7 +132,8 @@ def is_weekend(now):
 async def send_signal(context):
     global signals_buffer
     application = context.application
-    now = datetime.now(timezone.utc) + timedelta(hours=7)
+    now = datetime.now(JAKARTA_TZ)
+    logging.info(f"Waktu sekarang (Jakarta): {now}")
 
     if now.weekday() == 4 and now.time() >= time(22, 0):
         candles = fetch_twelvedata("EUR/USD", "5min", 100)
@@ -186,7 +195,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last = candles[0]
         msg = (
             f"💱 *EUR/USD Price*\n"
-            f"🕒 {last['datetime']}\n"
+            f"🕒 {last['datetime'].strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"🔼 Open: {last['open']:.5f}\n"
             f"🔽 Close: {last['close']:.5f}\n"
             f"📈 High: {last['high']:.5f}\n"
