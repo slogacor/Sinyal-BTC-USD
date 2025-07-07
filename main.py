@@ -17,7 +17,6 @@ CHAT_ID = "-1002883903673"
 AUTHORIZED_USER_ID = 1305881282
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 signals_buffer = []
-active_trades = []  # Untuk menyimpan trade yang sedang dipantau
 
 # === KEEP ALIVE SERVER ===
 app = Flask(__name__)
@@ -85,20 +84,21 @@ def generate_signal(df):
         signal = "BUY" if last["close"] > prev["close"] else "SELL"
     elif score == 2:
         signal = "BUY" if last["close"] > last["open"] else "SELL"
+    else:
+        # Pastikan selalu ada sinyal walau score rendah
+        signal = "BUY" if last["close"] >= prev["close"] else "SELL"
 
     return signal, score, note, last, snr_res, snr_sup
 
 def calculate_tp_sl(signal, price, score, atr):
-    atr_pips = round(atr * 10000)
-    buffer = 5
     if signal == "BUY":
         tp1 = round(price + (atr * (1 + score / 2)), 5)
         tp2 = round(price + (atr * (1.5 + score / 2)), 5)
-        sl = round(price - (atr * (0.8)), 5)
+        sl = round(price - (atr * 0.8), 5)
     else:
         tp1 = round(price - (atr * (1 + score / 2)), 5)
         tp2 = round(price - (atr * (1.5 + score / 2)), 5)
-        sl = round(price + (atr * (0.8)), 5)
+        sl = round(price + (atr * 0.8), 5)
     return tp1, tp2, sl
 
 def format_status(score):
@@ -113,14 +113,6 @@ async def send_signal(context):
 
     df = prepare_df(candles)
     signal, score, note, last, res, sup = generate_signal(df)
-    if not signal:
-        # Jika tidak ada sinyal valid, kita tetap kirim sinyal BUY/SELL default
-        # Contoh fallback: jika harga close > open = BUY, else SELL
-        last_candle = df.iloc[-1]
-        signal = "BUY" if last_candle["close"] > last_candle["open"] else "SELL"
-        score = 1
-        note = "⚠️ Sinyal fallback - sinyal otomatis karena tidak ada sinyal valid.\n"
-
     price = last["close"]
     tp1, tp2, sl = calculate_tp_sl(signal, price, score, last["atr"])
     time_now = datetime.now(pytz.timezone("Asia/Jakarta")).strftime("%H:%M:%S")
@@ -142,73 +134,70 @@ async def send_signal(context):
     )
 
     await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
-    signals_buffer.append({"signal": signal, "price": price})
+    signals_buffer.append({"signal": signal, "price": price, "tp1": tp1, "tp2": tp2, "sl": sl})
 
-    # Simpan trade aktif untuk pantau TP/SL
-    active_trades.append({
-        "signal": signal,
-        "tp1": tp1,
-        "tp2": tp2,
-        "sl": sl,
-        "entry": price,
-        "open_time": datetime.now(pytz.timezone("Asia/Jakarta"))
-    })
-
-# === FUNGSI PANTAU TP/SL ===
+# === PANTAU TP/SL ===
 async def pantau_tp_sl(context):
-    while True:
-        if not active_trades:
-            await asyncio.sleep(60)
-            continue
+    if not signals_buffer:
+        return
 
-        candles = fetch_twelvedata("EUR/USD", "1min", 1)
-        if not candles:
-            await asyncio.sleep(60)
-            continue
+    candles = fetch_twelvedata()
+    if candles is None:
+        return
 
-        current_price = float(candles[-1]["close"])
-        to_remove = []
+    df = prepare_df(candles)
+    last_price = df.iloc[-1]["close"]
 
-        for trade in active_trades:
-            signal = trade["signal"]
-            tp1 = trade["tp1"]
-            tp2 = trade["tp2"]
-            sl = trade["sl"]
-            entry = trade["entry"]
+    to_remove = []
+    for i, signal_data in enumerate(signals_buffer):
+        signal = signal_data["signal"]
+        tp1 = signal_data["tp1"]
+        tp2 = signal_data["tp2"]
+        sl = signal_data["sl"]
 
-            if signal == "BUY":
-                if current_price >= tp2:
-                    level = "🎯 TP2"
-                elif current_price >= tp1:
-                    level = "🎯 TP1"
-                elif current_price <= sl:
-                    level = "🛑 SL"
-                else:
-                    continue
-            else:  # SELL
-                if current_price <= tp2:
-                    level = "🎯 TP2"
-                elif current_price <= tp1:
-                    level = "🎯 TP1"
-                elif current_price >= sl:
-                    level = "🛑 SL"
-                else:
-                    continue
+        hit_tp1 = False
+        hit_tp2 = False
+        hit_sl = False
 
-            msg = (
-                f"📈 *Update Trade EUR/USD*\n"
-                f"📍 Arah: *{signal}*\n"
-                f"💰 Entry: `{entry}`\n"
-                f"💹 Harga sekarang: `{current_price}`\n"
-                f"✅ Status: {level} tercapai!"
+        # Cek harga terakhir apakah mencapai TP atau SL
+        if signal == "BUY":
+            if last_price >= tp1:
+                hit_tp1 = True
+            if last_price >= tp2:
+                hit_tp2 = True
+            if last_price <= sl:
+                hit_sl = True
+        else:
+            if last_price <= tp1:
+                hit_tp1 = True
+            if last_price <= tp2:
+                hit_tp2 = True
+            if last_price >= sl:
+                hit_sl = True
+
+        alert_msgs = []
+        if hit_tp1:
+            alert_msgs.append(f"🎉 TP1 tercapai pada harga {last_price}")
+        if hit_tp2:
+            alert_msgs.append(f"🎉 TP2 tercapai pada harga {last_price}")
+        if hit_sl:
+            alert_msgs.append(f"⚠️ SL tercapai pada harga {last_price}")
+
+        if alert_msgs:
+            msg_alert = (
+                f"📢 *Alert TP/SL EUR/USD*\n"
+                f"🕒 Waktu: {datetime.now(pytz.timezone('Asia/Jakarta')).strftime('%H:%M:%S')} WIB\n"
+                f"📈 Arah: *{signal_data['signal']}*\n"
+                f"💰 Harga sekarang: {last_price}\n"
+                + "\n".join(alert_msgs)
             )
-            await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
-            to_remove.append(trade)
+            await context.bot.send_message(chat_id=CHAT_ID, text=msg_alert, parse_mode='Markdown')
+            # Setelah alert, hapus dari buffer agar tidak spam
+            to_remove.append(i)
 
-        for trade in to_remove:
-            active_trades.remove(trade)
-
-        await asyncio.sleep(60)
+    # Hapus sinyal yang sudah mencapai TP/SL
+    for idx in reversed(to_remove):
+        signals_buffer.pop(idx)
 
 # === REKAP HARIAN ===
 async def rekap_harian(context):
@@ -254,16 +243,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         while True:
             jakarta = pytz.timezone("Asia/Jakarta")
             now = datetime.now(jakarta)
-            next_22 = datetime.combine(now.date(), time(22, 0, 0))
+            next_22 = jakarta.localize(datetime.combine(now.date(), time(22, 0, 0)))
             if now > next_22:
                 next_22 += timedelta(days=1)
             delay = (next_22 - now).total_seconds()
             await asyncio.sleep(delay)
             await rekap_harian(context)
 
+    async def monitoring_tp_sl_job():
+        while True:
+            await pantau_tp_sl(context)
+            await asyncio.sleep(5 * 60)  # cek tiap 5 menit
+
     asyncio.create_task(sinyal_job())
     asyncio.create_task(jadwal_rekap())
-    asyncio.create_task(pantau_tp_sl(context))  # Task pantau TP/SL
+    asyncio.create_task(monitoring_tp_sl_job())
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     candles = fetch_twelvedata("EUR/USD", "1min", 1)
