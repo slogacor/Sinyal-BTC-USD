@@ -1,22 +1,6 @@
-# Web server
-flask==3.0.3
-
-# Numerical and data processing
-numpy==1.26.4
+Flask==3.0.3
+requests==2.31.0
 pandas==2.2.2
-
-# Technical analysis
-ta==0.11.0
-
-# Telegram bot
-python-telegram-bot[job-queue]==20.7
-
-# HTTP requests
-requests==2.32.3
-
-# Event loop compatibility
-nest_asyncio==1.6.0
-
-# Timezone and datetime parsing
+python-telegram-bot==20.8
+ta==0.11.0b0
 pytz==2024.1
-python-dateutil==2.9.0.post0
