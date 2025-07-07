@@ -2,7 +2,7 @@ from flask import Flask
 from threading import Thread
 import requests
 import logging
-from datetime import datetime, timedelta, time, timezone
+from datetime import datetime, timedelta, time
 import asyncio
 import pandas as pd
 import ta
@@ -127,6 +127,7 @@ async def send_signal(context):
     application = context.application
     jakarta = pytz.timezone("Asia/Jakarta")
     now = datetime.now(jakarta)
+    utc_minus_3 = now - timedelta(hours=3)
 
     if now.weekday() == 4 and now.time() >= time(22, 0):
         candles = fetch_twelvedata("EUR/USD", "5min", 100)
@@ -168,7 +169,7 @@ async def send_signal(context):
         status_text = format_status(score)
         entry_note = "Entry di bawah harga sinyal" if signal == "BUY" else "Entry di atas harga sinyal"
         msg = (
-            f"🚨 *Sinyal {signal}* {'⬆️' if signal=='BUY' else '⬇️'} _EUR/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"🚨 *Sinyal {signal}* {'⬆️' if signal=='BUY' else '⬇️'} _EUR/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S')} (UTC+7 | -3 jam: {utc_minus_3.strftime('%H:%M:%S')})\n"
             f"📊 Status: {status_text}\n"
             f"⏳ RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
             f"⚖️ Support: {support:.5f}, Resistance: {resistance:.5f}\n"
@@ -185,10 +186,13 @@ async def send_signal(context):
 async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     candles = fetch_twelvedata("EUR/USD", "1min", 1)
     if candles:
+        jakarta = pytz.timezone("Asia/Jakarta")
+        now = datetime.now(jakarta)
+        utc_minus_3 = now - timedelta(hours=3)
         last = candles[0]
         msg = (
             f"💱 *EUR/USD Price*\n"
-            f"🕒 {last['datetime']}\n"
+            f"🕒 {last['datetime']} (UTC+7 | -3 jam: {utc_minus_3.strftime('%H:%M:%S')})\n"
             f"🔼 Open: {last['open']:.5f}\n"
             f"🔽 Close: {last['close']:.5f}\n"
             f"📈 High: {last['high']:.5f}\n"
