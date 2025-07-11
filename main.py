@@ -10,8 +10,18 @@ from datetime import datetime
 # Setup environment variable untuk plotly
 os.environ["PLOTLY_RENDERER"] = "kaleido"
 
+# Ambil environment variables dengan pengecekan
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-GROUP_ID = int(os.environ.get("GROUP_ID"))
+group_id_str = os.environ.get("GROUP_ID")
+
+if BOT_TOKEN is None:
+    raise ValueError("Environment variable BOT_TOKEN is not set")
+
+if group_id_str is None:
+    raise ValueError("Environment variable GROUP_ID is not set")
+
+GROUP_ID = int(group_id_str)
+
 SYMBOL = "BTCUSDT"
 INTERVAL = "1m"
 
@@ -94,11 +104,12 @@ def send_update():
     caption = get_analysis(df)
     bot.send_photo(GROUP_ID, photo=chart, caption=caption, parse_mode="Markdown")
 
-while True:
-    try:
-        print(f"[{datetime.now()}] Sending update to Telegram...")
-        send_update()
-        time.sleep(600)
-    except Exception as e:
-        print("❌ Error:", e)
-        time.sleep(60)
+if __name__ == "__main__":
+    while True:
+        try:
+            print(f"[{datetime.now()}] Sending update to Telegram...")
+            send_update()
+            time.sleep(600)
+        except Exception as e:
+            print("❌ Error:", e)
+            time.sleep(60)
