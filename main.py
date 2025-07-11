@@ -1,4 +1,3 @@
-import os
 import telebot
 import requests
 import pandas as pd
@@ -6,21 +5,14 @@ import plotly.graph_objects as go
 import io
 import time
 from datetime import datetime
+import os
 
 # Setup environment variable untuk plotly
 os.environ["PLOTLY_RENDERER"] = "kaleido"
 
-# Ambil environment variables dengan pengecekan
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-group_id_str = os.environ.get("GROUP_ID")
-
-if BOT_TOKEN is None:
-    raise ValueError("Environment variable BOT_TOKEN is not set")
-
-if group_id_str is None:
-    raise ValueError("Environment variable GROUP_ID is not set")
-
-GROUP_ID = int(group_id_str)
+# === Hardcoded TOKEN dan GROUP ID ===
+BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"  
+GROUP_ID = -1002657952587  
 
 SYMBOL = "BTCUSDT"
 INTERVAL = "1m"
