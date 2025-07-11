@@ -1,21 +1,25 @@
-# main.py
-
 import telebot
 import requests
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
-from config import BOT_TOKEN, GROUP_ID, SYMBOL, INTERVAL
 import io
 import time
+from datetime import datetime
+import os
 
-# Inisialisasi bot Telegram
+# Biar kaleido pakai Chromium di Railway (optional)
+os.environ["PLOTLY_RENDERER"] = "kaleido"
+
+# Ambil konfigurasi dari environment
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+GROUP_ID = int(os.environ.get("GROUP_ID"))
+SYMBOL = "BTCUSDT"
+INTERVAL = "1m"
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# URL Binance API untuk candlestick
 BINANCE_URL = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit=10"
 
-# Ambil data candle dari Binance
 def fetch_candles():
     res = requests.get(BINANCE_URL)
     raw_data = res.json()
@@ -29,79 +33,8 @@ def fetch_candles():
     df = df.astype(float)
     return df
 
-# Buat gambar chart candlestick
 def generate_chart(df):
     fig = go.Figure(data=[go.Candlestick(
         x=df.index,
         open=df["open"],
-        high=df["high"],
-        low=df["low"],
-        close=df["close"],
-        increasing_line_color='green',
-        decreasing_line_color='red'
-    )])
-    fig.update_layout(
-        title="BTC/USDT - Last 10 Candles (1m)",
-        xaxis_title="Time",
-        yaxis_title="Price",
-        template="plotly_dark",
-        height=500,
-        margin=dict(l=30, r=30, t=40, b=30)
-    )
-    buffer = io.BytesIO()
-    fig.write_image(buffer, format='png')
-    buffer.seek(0)
-    return buffer
-
-# Analisis candle terakhir dan deteksi pola sederhana
-def get_analysis(df):
-    last = df.iloc[-1]
-    open_ = last["open"]
-    close = last["close"]
-    high = last["high"]
-    low = last["low"]
-
-    direction = "Bullish 📈" if close > open_ else "Bearish 📉"
-    change = round(((close - open_) / open_) * 100, 2)
-
-    # Deteksi pola candlestick dasar
-    body = abs(close - open_)
-    shadow_top = high - max(open_, close)
-    shadow_bottom = min(open_, close) - low
-
-    if body < (shadow_top + shadow_bottom) * 0.3:
-        pola = "Doji ⚖️"
-    elif close > open_ and body > shadow_top and shadow_bottom > body * 0.5:
-        pola = "Hammer 🛠️"
-    elif open > close and body > shadow_bottom and shadow_top > body * 0.5:
-        pola = "Inverted Hammer 🔃"
-    else:
-        pola = "—"
-
-    return (
-        f"📊 *BTC/USDT (10m snapshot)*\n"
-        f"🕒 Time: {df.index[-1].strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"💰 Open: {open_:.2f}\n"
-        f"🔚 Close: {close:.2f}\n"
-        f"🔼 High: {high:.2f}\n"
-        f"🔽 Low: {low:.2f}\n"
-        f"🧠 Pola: {pola}\n"
-        f"📈 Status: *{direction}* ({change}%)"
-    )
-
-# Fungsi utama kirim chart dan analisa ke Telegram
-def send_update():
-    df = fetch_candles()
-    chart = generate_chart(df)
-    caption = get_analysis(df)
-    bot.send_photo(GROUP_ID, photo=chart, caption=caption, parse_mode="Markdown")
-
-# Loop otomatis kirim setiap 10 menit
-while True:
-    try:
-        print(f"[{datetime.now()}] Sending update to Telegram...")
-        send_update()
-        time.sleep(600)  # 600 detik = 10 menit
-    except Exception as e:
-        print("❌ Error:", e)
-        time.sleep(60)
+        high=df["high
