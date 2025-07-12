@@ -7,19 +7,22 @@ import time
 from datetime import datetime
 import os
 
-# Setup environment variable untuk plotly
+# Setup renderer untuk Plotly
 os.environ["PLOTLY_RENDERER"] = "kaleido"
 
-# === Hardcoded TOKEN dan GROUP ID ===
-BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"  
-GROUP_ID = -1002657952587  
+# Hardcoded token dan group ID
+BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
+GROUP_ID = -1002657952587
 
 SYMBOL = "BTCUSDT"
 INTERVAL = "1m"
 
 bot = telebot.TeleBot(BOT_TOKEN)
+
+# Binance API URL
 BINANCE_URL = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit=10"
 
+# Fungsi untuk ambil data candle
 def fetch_candles():
     res = requests.get(BINANCE_URL)
     raw_data = res.json()
@@ -33,6 +36,7 @@ def fetch_candles():
     df = df.astype(float)
     return df
 
+# Fungsi untuk bikin candlestick chart
 def generate_chart(df):
     fig = go.Figure(data=[go.Candlestick(
         x=df.index,
@@ -56,6 +60,7 @@ def generate_chart(df):
     buffer.seek(0)
     return buffer
 
+# Fungsi untuk analisis candle
 def get_analysis(df):
     last = df.iloc[-1]
     open_ = last["open"]
@@ -90,18 +95,37 @@ def get_analysis(df):
         f"📈 Status: *{direction}* ({change}%)"
     )
 
+# Fungsi untuk kirim update ke grup
 def send_update():
     df = fetch_candles()
     chart = generate_chart(df)
     caption = get_analysis(df)
     bot.send_photo(GROUP_ID, photo=chart, caption=caption, parse_mode="Markdown")
 
+# Handler untuk balas pesan user (ping test)
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    if message.text.lower() in ["ping", "/start", "tes", "halo", "test"]:
+        bot.reply_to(message, "🤖 Bot aktif dan berjalan!")
+
+# === MAIN LOOP ===
 if __name__ == "__main__":
-    while True:
-        try:
-            print(f"[{datetime.now()}] Sending update to Telegram...")
-            send_update()
-            time.sleep(600)
-        except Exception as e:
-            print("❌ Error:", e)
-            time.sleep(60)
+    # Jalankan auto kirim chart setiap 10 menit di thread terpisah
+    import threading
+
+    def auto_sender():
+        while True:
+            try:
+                print(f"[{datetime.now()}] Sending update to Telegram...")
+                send_update()
+                time.sleep(600)  # 10 menit
+            except Exception as e:
+                print("❌ Error:", e)
+                time.sleep(60)
+
+    # Jalankan thread pengirim otomatis
+    threading.Thread(target=auto_sender, daemon=True).start()
+
+    # Jalankan listener untuk user (wajib untuk respon balasan)
+    print("🤖 Bot Telegram sedang berjalan...")
+    bot.infinity_polling()
