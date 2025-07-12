@@ -7,22 +7,20 @@ import time
 from datetime import datetime
 import os
 
-# Setup renderer untuk Plotly
+# Setup environment variable untuk plotly
 os.environ["PLOTLY_RENDERER"] = "kaleido"
 
-# Hardcoded token dan group ID
-BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
-GROUP_ID = -1002657952587
+# === TOKEN dan GROUP ID (Hardcoded) ===
+BOT_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"  # Ganti dengan milikmu
+GROUP_ID = -1002657952587  # Ganti dengan ID grup kamu
 
 SYMBOL = "BTCUSDT"
-INTERVAL = "1m"
+INTERVAL = "5m"  # Diganti ke 5 menit
 
 bot = telebot.TeleBot(BOT_TOKEN)
-
-# Binance API URL
 BINANCE_URL = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit=10"
 
-# Fungsi untuk ambil data candle
+# === Ambil data candle dari Binance ===
 def fetch_candles():
     res = requests.get(BINANCE_URL)
     raw_data = res.json()
@@ -36,7 +34,7 @@ def fetch_candles():
     df = df.astype(float)
     return df
 
-# Fungsi untuk bikin candlestick chart
+# === Buat grafik candlestick ===
 def generate_chart(df):
     fig = go.Figure(data=[go.Candlestick(
         x=df.index,
@@ -48,7 +46,7 @@ def generate_chart(df):
         decreasing_line_color='red'
     )])
     fig.update_layout(
-        title="BTC/USDT - Last 10 Candles (1m)",
+        title="BTC/USDT - Last 10 Candles (5m)",
         xaxis_title="Time",
         yaxis_title="Price",
         template="plotly_dark",
@@ -60,7 +58,7 @@ def generate_chart(df):
     buffer.seek(0)
     return buffer
 
-# Fungsi untuk analisis candle
+# === Analisis Candlestick ===
 def get_analysis(df):
     last = df.iloc[-1]
     open_ = last["open"]
@@ -85,7 +83,7 @@ def get_analysis(df):
         pola = "—"
 
     return (
-        f"📊 *BTC/USDT (10m snapshot)*\n"
+        f"📊 *BTC/USDT (5m snapshot)*\n"
         f"🕒 Time: {df.index[-1].strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"💰 Open: {open_:.2f}\n"
         f"🔚 Close: {close:.2f}\n"
@@ -95,37 +93,38 @@ def get_analysis(df):
         f"📈 Status: *{direction}* ({change}%)"
     )
 
-# Fungsi untuk kirim update ke grup
+# === Kirim update chart ke Telegram ===
 def send_update():
     df = fetch_candles()
     chart = generate_chart(df)
     caption = get_analysis(df)
     bot.send_photo(GROUP_ID, photo=chart, caption=caption, parse_mode="Markdown")
 
-# Handler untuk balas pesan user (ping test)
+# === Balas pesan di private dan grup ===
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    if message.text.lower() in ["ping", "/start", "tes", "halo", "test"]:
-        bot.reply_to(message, "🤖 Bot aktif dan berjalan!")
+    print(f"[DEBUG] Received message from chat_id: {message.chat.id}, text: {message.text}")
+    if message.text.lower() in ["ping", "/start", "halo", "test", "tes"]:
+        bot.reply_to(message, "✅ Bot aktif dan berjalan!")
 
-# === MAIN LOOP ===
+# === Main loop ===
 if __name__ == "__main__":
-    # Jalankan auto kirim chart setiap 10 menit di thread terpisah
+    # Jalankan loop pengiriman chart
     import threading
 
-    def auto_sender():
+    def chart_loop():
         while True:
             try:
                 print(f"[{datetime.now()}] Sending update to Telegram...")
                 send_update()
-                time.sleep(600)  # 10 menit
+                time.sleep(600)  # Setiap 10 menit
             except Exception as e:
                 print("❌ Error:", e)
                 time.sleep(60)
 
-    # Jalankan thread pengirim otomatis
-    threading.Thread(target=auto_sender, daemon=True).start()
+    # Jalankan dalam thread terpisah
+    threading.Thread(target=chart_loop).start()
 
-    # Jalankan listener untuk user (wajib untuk respon balasan)
-    print("🤖 Bot Telegram sedang berjalan...")
+    # Mulai polling pesan
+    print("🤖 Bot sedang berjalan dan mendengarkan pesan...")
     bot.infinity_polling()
