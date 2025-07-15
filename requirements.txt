@@ -1,5 +1,6 @@
-yfinance
+numpy==1.23.5
 pandas
+yfinance
 matplotlib
 mplfinance
 pandas-ta
