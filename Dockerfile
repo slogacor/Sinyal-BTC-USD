@@ -1,21 +1,20 @@
-# Gunakan base image Python
-FROM python:3.9-slim
+FROM debian:bookworm
 
-# Install dependency OS untuk build TA-Lib
 RUN apt-get update && apt-get install -y \
     build-essential \
     wget \
     curl \
-    libta-lib0 \
-    libta-lib0-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install TA-Lib Python wrapper
-RUN pip install --no-cache-dir TA-Lib yfinance python-telegram-bot mplfinance pandas matplotlib
+# Download dan install TA-Lib dari source
+RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
+    tar -xzf ta-lib-0.4.0-src.tar.gz && \
+    cd ta-lib && \
+    ./configure --prefix=/usr && \
+    make && make install && \
+    cd .. && rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
-# Copy seluruh file project ke container
-WORKDIR /app
-COPY . /app
+# Optional: cek versi ta-lib (kalau ada binary atau lib)
+# RUN ldconfig && ta-lib-config --version
 
-# Jalankan main.py saat container start
-CMD ["python", "main.py"]
+CMD ["bash"]
