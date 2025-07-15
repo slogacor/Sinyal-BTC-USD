@@ -1,7 +1,10 @@
+python-telegram-bot==20.7
 pandas
-yfinance
-pandas_ta==0.3.14b0
-mplfinance
+requests
 matplotlib
-python-telegram-bot==13.15
-numpy<=1.26.4
+mplfinance
+beautifulsoup4
+flask
+nest_asyncio
+ta
+pytz
