@@ -1,22 +1,21 @@
+# Gunakan base image Python
 FROM python:3.9-slim
 
-# Install dependencies dan Chrome
+# Install dependency OS untuk build TA-Lib
 RUN apt-get update && apt-get install -y \
+    build-essential \
     wget \
-    gnupg \
-    --no-install-recommends && \
-    wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - && \
-    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
-    apt-get update && apt-get install -y google-chrome-stable && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    curl \
+    libta-lib0 \
+    libta-lib0-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements dan install paket Python (pastikan requirements.txt ada)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install TA-Lib Python wrapper
+RUN pip install --no-cache-dir TA-Lib yfinance python-telegram-bot mplfinance pandas matplotlib
 
-# Copy semua file ke container
-COPY . /app
+# Copy seluruh file project ke container
 WORKDIR /app
+COPY . /app
 
 # Jalankan main.py saat container start
 CMD ["python", "main.py"]
