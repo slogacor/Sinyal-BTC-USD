@@ -1,5 +1,6 @@
-telebot
-requests
+yfinance
 pandas
-plotly
-kaleido
+matplotlib
+mplfinance
+python-telegram-bot
+TA-Lib
