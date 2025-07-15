@@ -1,24 +1,29 @@
 import time
-import threading
 import pandas as pd
 import yfinance as yf
 import talib
 import mplfinance as mpf
 import matplotlib.pyplot as plt
+from telegram import Bot, Update
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 from datetime import datetime
-from telegram import Bot
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+import logging
 
-# Token dan Chat ID grup Telegram
+# Setup logging biar kelihatan error/debug
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# Konfigurasi Telegram
 TELEGRAM_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
 TELEGRAM_CHAT_ID = "-1002657952587"
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-SYMBOL = "GC=F"  # XAU/USD Yahoo Finance ticker
+# Config chart
+SYMBOL = "GC=F"
 INTERVAL_MINUTES = 15
 CANDLE_LIMIT = 50
 
+# Ambil data dari Yahoo Finance
 def fetch_data():
     df = yf.download(tickers=SYMBOL, period="2d", interval="15m")
     df = df.tail(CANDLE_LIMIT)
@@ -27,6 +32,7 @@ def fetch_data():
     df['Datetime'] = pd.to_datetime(df['Datetime'])
     return df
 
+# Deteksi pola candlestick
 def detect_patterns(df):
     openp = df['open'].values
     highp = df['high'].values
@@ -49,35 +55,41 @@ def detect_patterns(df):
             detected[name] = val
     return detected
 
+# Bikin chart dan tandai candle terakhir
 def plot_and_mark(df, detected_patterns):
     mc = mpf.make_marketcolors(up='g', down='r', inherit=True)
     s = mpf.make_mpf_style(marketcolors=mc)
-
     df_plot = df.set_index('Datetime')
     latest_idx = len(df_plot) - 1
-
     fig, axlist = mpf.plot(df_plot, type='candle', style=s, returnfig=True)
-
     ax = axlist[0]
-
     candle = df.iloc[latest_idx]
     x = latest_idx
     low = candle['low']
     high = candle['high']
-
-    radius = 0.2
-    circle = plt.Circle((x, (high + low)/2), radius, color='red', fill=False, linewidth=2)
+    circle = plt.Circle((x, (high + low) / 2), 0.3, color='red', fill=False, linewidth=2)
     ax.add_patch(circle)
-
     filename = "chart.png"
     fig.savefig(filename)
     plt.close(fig)
     return filename
 
+# Kirim pesan ke grup
 def send_telegram_message(text, photo_path):
     bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=open(photo_path, 'rb'), caption=text)
 
-def monitoring_loop():
+# Handler untuk /start
+def start_command(update: Update, context: CallbackContext):
+    update.message.reply_text("✅ Bot sedang berjalan dan akan mengirim sinyal jika pola candlestick terdeteksi.")
+
+# Handler untuk pesan biasa yang mengandung "start"
+def message_handler(update: Update, context: CallbackContext):
+    text = update.message.text.lower()
+    if 'start' in text:
+        update.message.reply_text("✅ Bot aktif dan siap memantau sinyal candlestick.")
+
+# Fungsi utama analisis data
+def pattern_loop():
     while True:
         try:
             df = fetch_data()
@@ -91,38 +103,29 @@ def monitoring_loop():
                     msg += f"→ {pat}: {direction}\n"
                 chart_file = plot_and_mark(df, patterns)
                 send_telegram_message(msg, chart_file)
-                print(f"Sent message at {now}")
+                print(f"[{now}] Sinyal terkirim.")
             else:
-                print(f"No pattern detected at {now}")
-
+                print(f"[{now}] Tidak ada pola terdeteksi.")
         except Exception as e:
-            print("Error:", e)
-
+            print("Terjadi kesalahan:", e)
         time.sleep(INTERVAL_MINUTES * 60)
 
-# Telegram bot handlers untuk membalas pesan "start"
-def start_command(update, context):
-    update.message.reply_text('Halo! Bot monitoring XAU/USD siap membantu kamu.')
-
-def message_handler(update, context):
-    text = update.message.text.lower()
-    if 'start' in text:
-        update.message.reply_text("Bot sudah mulai monitoring dan siap mengirim sinyal pola candlestick!")
-
-def main():
-    # Mulai thread monitoring loop supaya tetap jalan paralel
-    threading.Thread(target=monitoring_loop, daemon=True).start()
-
-    # Setup Telegram updater & dispatcher
-    updater = Updater(TELEGRAM_TOKEN, use_context=True)
+# Jalankan bot Telegram
+def run_telegram_bot():
+    updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
     dp = updater.dispatcher
-
-    dp.add_handler(CommandHandler('start', start_command))
-    dp.add_handler(MessageHandler(Filters.text & (~Filters.command), message_handler))
-
-    print("Bot started. Listening for messages...")
+    dp.add_handler(CommandHandler("start", start_command))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, message_handler))
     updater.start_polling()
+    print("🤖 Telegram bot aktif dan polling...")
     updater.idle()
 
+# Menjalankan bot & analisis secara paralel
 if __name__ == "__main__":
-    main()
+    import threading
+    # Jalankan bot Telegram di thread terpisah
+    telegram_thread = threading.Thread(target=run_telegram_bot)
+    telegram_thread.start()
+
+    # Jalankan loop analisis
+    pattern_loop()
