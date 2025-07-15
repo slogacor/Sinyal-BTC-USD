@@ -1,6 +1,6 @@
 yfinance
 pandas
 matplotlib
-pandas-ta
 mplfinance
+pandas-ta
 python-telegram-bot==13.15
