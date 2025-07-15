@@ -1,0 +1,6 @@
+yfinance
+pandas
+matplotlib
+ta-lib
+mplfinance
+python-telegram-bot==13.15
