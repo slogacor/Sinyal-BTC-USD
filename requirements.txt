@@ -1,6 +1,0 @@
-yfinance
-pandas
-matplotlib
-mplfinance
-python-telegram-bot
-ta
