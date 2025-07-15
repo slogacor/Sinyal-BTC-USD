@@ -2,20 +2,20 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies sistem yang dibutuhkan untuk matplotlib, pandas_ta, dll
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    gcc \
     libfreetype6-dev \
     libpng-dev \
-    pkg-config \
+    libjpeg-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy requirements
 COPY requirements.txt .
 
-RUN pip install --upgrade pip setuptools wheel
-RUN pip install -r requirements.txt
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py .
+# Copy project files
+COPY . .
 
 CMD ["python", "bot.py"]
