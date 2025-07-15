@@ -2,7 +2,7 @@ import os
 import time
 import pandas as pd
 import yfinance as yf
-import talib
+import ta
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 from telegram import Bot
