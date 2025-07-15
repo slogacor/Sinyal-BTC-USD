@@ -1,9 +1,7 @@
-# main.py
-
 from flask import Flask
 from threading import Thread
 import requests
-from datetime import datetime, time
+from datetime import datetime
 import pytz
 import asyncio
 from telegram import Update
@@ -15,7 +13,6 @@ from ta.trend import EMAIndicator, SMAIndicator, MACD
 from ta.momentum import RSIIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
 import pandas as pd
-from bs4 import BeautifulSoup
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 import io
@@ -34,7 +31,7 @@ def keep_alive():
 def home():
     return "Bot is running"
 
-def fetch_twelvedata(symbol="XAU/USD", interval="1h", count=100):
+def fetch_twelvedata(symbol="XAU/USD", interval="5m", count=100):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY}&outputsize={count}&format=JSON"
     response = requests.get(url)
     if response.status_code != 200:
@@ -78,7 +75,7 @@ def detect_candle_pattern(df):
     return patterns
 
 async def send_chart_with_pattern(context):
-    candles = fetch_twelvedata("XAU/USD", interval="1h", count=50)
+    candles = fetch_twelvedata("XAU/USD", interval="5m", count=50)
     if candles is None:
         await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD untuk chart.")
         return
@@ -86,7 +83,6 @@ async def send_chart_with_pattern(context):
     df = prepare_df(candles)
     patterns = detect_candle_pattern(df)
 
-    # Plot chart
     ap = []
     if patterns:
         ap = [mpf.make_addplot(df["close"], type='scatter', markersize=100, marker='o', color='red')]
@@ -95,7 +91,7 @@ async def send_chart_with_pattern(context):
         df.tail(50),
         type='candle',
         style='charles',
-        title="XAU/USD 1H Chart",
+        title="XAU/USD 5m Chart",
         ylabel='Price',
         addplot=ap,
         returnfig=True
@@ -106,13 +102,19 @@ async def send_chart_with_pattern(context):
     buf.seek(0)
     plt.close()
 
-    caption = "📉 Chart XAU/USD 1H"
+    caption = "📉 Chart XAU/USD 5m"
     if patterns:
         caption += "\n🔍 Ditemukan pola: " + ", ".join(patterns)
     else:
         caption += "\n❌ Tidak ada pola candlestick yang dikenali."
 
     await context.bot.send_photo(chat_id=CHAT_ID, photo=buf, caption=caption)
+
+async def send_chart_if_on_hour(context):
+    jakarta_tz = pytz.timezone("Asia/Jakarta")
+    now = datetime.now(jakarta_tz)
+    if now.minute == 0:
+        await send_chart_with_pattern(context)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Halo! Bot sudah aktif.")
@@ -128,7 +130,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
-    jakarta_tz = pytz.timezone("Asia/Jakarta")
     job_queue = application.job_queue
 
     application.add_handler(CommandHandler("start", start))
@@ -136,8 +137,8 @@ async def main():
     application.add_handler(MessageHandler(filters.ALL, ignore_bot_messages))
     application.add_error_handler(error_handler)
 
-    # Kirim chart + pola candlestick setiap 1 jam sekali
-    job_queue.run_repeating(send_chart_with_pattern, interval=3600, first=10)
+    # Cek tiap menit, jika menit == 0 kirim chart 5m
+    job_queue.run_repeating(send_chart_if_on_hour, interval=60, first=0)
 
     await application.run_polling()
 
