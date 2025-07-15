@@ -1,16 +1,15 @@
-import os
 import time
 import pandas as pd
 import yfinance as yf
-import ta
+import talib
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 from telegram import Bot
 from datetime import datetime
 
-# Load env variables
-TELEGRAM_TOKEN = os.getenv("7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c")
-TELEGRAM_CHAT_ID = os.getenv("-1002657952587")  
+# Token dan Chat ID langsung ditulis di sini
+TELEGRAM_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
+TELEGRAM_CHAT_ID = "-1002657952587"
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
@@ -23,6 +22,7 @@ def fetch_data():
     df = df.tail(CANDLE_LIMIT)
     df.reset_index(inplace=True)
     df.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'}, inplace=True)
+    df['Datetime'] = pd.to_datetime(df['Datetime'])
     return df
 
 def detect_patterns(df):
@@ -39,7 +39,7 @@ def detect_patterns(df):
         "MorningStar": talib.CDLMORNINGSTAR(openp, highp, lowp, closep),
         "EveningStar": talib.CDLEVENINGSTAR(openp, highp, lowp, closep),
     }
-    latest = len(closep) -1
+    latest = len(closep) - 1
     detected = {}
     for name, values in patterns.items():
         val = values[latest]
@@ -51,8 +51,10 @@ def plot_and_mark(df, detected_patterns):
     mc = mpf.make_marketcolors(up='g', down='r', inherit=True)
     s = mpf.make_mpf_style(marketcolors=mc)
 
-    latest_idx = len(df) - 1
-    fig, axlist = mpf.plot(df.set_index('Datetime'), type='candle', style=s, returnfig=True)
+    df_plot = df.set_index('Datetime')
+    latest_idx = len(df_plot) - 1
+
+    fig, axlist = mpf.plot(df_plot, type='candle', style=s, returnfig=True)
 
     ax = axlist[0]
 
@@ -77,8 +79,6 @@ def main():
     while True:
         try:
             df = fetch_data()
-            df.rename(columns={"Datetime": "Datetime"}, inplace=True)
-            df['Datetime'] = pd.to_datetime(df['Datetime'])
             patterns = detect_patterns(df)
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
