@@ -1,13 +1,15 @@
 import time
+import threading
 import pandas as pd
 import yfinance as yf
 import talib
 import mplfinance as mpf
 import matplotlib.pyplot as plt
-from telegram import Bot
 from datetime import datetime
+from telegram import Bot
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
-# Token dan Chat ID langsung ditulis di sini
+# Token dan Chat ID grup Telegram
 TELEGRAM_TOKEN = "7678173969:AAEUvVsRqbsHV-oUeky54CVytf_9nU9Fi5c"
 TELEGRAM_CHAT_ID = "-1002657952587"
 
@@ -75,7 +77,7 @@ def plot_and_mark(df, detected_patterns):
 def send_telegram_message(text, photo_path):
     bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=open(photo_path, 'rb'), caption=text)
 
-def main():
+def monitoring_loop():
     while True:
         try:
             df = fetch_data()
@@ -97,6 +99,30 @@ def main():
             print("Error:", e)
 
         time.sleep(INTERVAL_MINUTES * 60)
+
+# Telegram bot handlers untuk membalas pesan "start"
+def start_command(update, context):
+    update.message.reply_text('Halo! Bot monitoring XAU/USD siap membantu kamu.')
+
+def message_handler(update, context):
+    text = update.message.text.lower()
+    if 'start' in text:
+        update.message.reply_text("Bot sudah mulai monitoring dan siap mengirim sinyal pola candlestick!")
+
+def main():
+    # Mulai thread monitoring loop supaya tetap jalan paralel
+    threading.Thread(target=monitoring_loop, daemon=True).start()
+
+    # Setup Telegram updater & dispatcher
+    updater = Updater(TELEGRAM_TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler('start', start_command))
+    dp.add_handler(MessageHandler(Filters.text & (~Filters.command), message_handler))
+
+    print("Bot started. Listening for messages...")
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
