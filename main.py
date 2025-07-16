@@ -31,9 +31,12 @@ def keep_alive():
 def home():
     return "Bot is running"
 
-def fetch_twelvedata(symbol="XAU/USD", interval="5m", count=100):
+def fetch_twelvedata(symbol="XAU/USD", interval="5min", count=100):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY}&outputsize={count}&format=JSON"
     response = requests.get(url)
+    print(f"Request URL: {url}")
+    print(f"Status code: {response.status_code}")
+    print(f"Response: {response.text}")
     if response.status_code != 200:
         return None
     data = response.json().get("values", [])
@@ -50,6 +53,15 @@ def detect_candle_pattern(df):
     patterns = []
     last = df.iloc[-1]
     prev = df.iloc[-2]
+    prev2 = df.iloc[-3] if len(df) >= 3 else None
+
+    body_last = abs(last["close"] - last["open"])
+    upper_shadow_last = last["high"] - max(last["close"], last["open"])
+    lower_shadow_last = min(last["close"], last["open"]) - last["low"]
+
+    body_prev = abs(prev["close"] - prev["open"])
+    upper_shadow_prev = prev["high"] - max(prev["close"], prev["open"])
+    lower_shadow_prev = min(prev["close"], prev["open"]) - prev["low"]
 
     # Bullish Engulfing
     if prev["close"] < prev["open"] and last["close"] > last["open"]:
@@ -62,20 +74,61 @@ def detect_candle_pattern(df):
             patterns.append("Bearish Engulfing")
 
     # Hammer
-    body = abs(last["close"] - last["open"])
-    lower_shadow = last["open"] - last["low"] if last["open"] > last["close"] else last["close"] - last["low"]
-    upper_shadow = last["high"] - last["close"] if last["close"] > last["open"] else last["high"] - last["open"]
-    if lower_shadow > 2 * body and upper_shadow < body:
+    if lower_shadow_last > 2 * body_last and upper_shadow_last < body_last:
         patterns.append("Hammer")
 
+    # Hanging Man (Hammer at top of uptrend)
+    # Simple check: if prev candle uptrend (close > open) and last candle hammer shape bearish
+    if prev["close"] > prev["open"] and \
+       lower_shadow_last > 2 * body_last and upper_shadow_last < body_last and \
+       last["close"] < last["open"]:
+        patterns.append("Hanging Man")
+
+    # Inverted Hammer
+    if upper_shadow_last > 2 * body_last and lower_shadow_last < body_last:
+        patterns.append("Inverted Hammer")
+
+    # Shooting Star (Inverted hammer at top of uptrend)
+    if prev["close"] > prev["open"] and \
+       upper_shadow_last > 2 * body_last and lower_shadow_last < body_last and \
+       last["close"] < last["open"]:
+        patterns.append("Shooting Star")
+
     # Doji
-    if abs(last["close"] - last["open"]) <= (0.1 * (last["high"] - last["low"])):
+    if body_last <= (0.1 * (last["high"] - last["low"])):
         patterns.append("Doji")
+
+    # Morning Star (3 candle pattern, bullish reversal)
+    # Prev2: bearish, Prev: small body (could be doji), Last: bullish and close > midpoint prev2 body
+    if prev2 is not None:
+        is_prev2_bearish = prev2["close"] < prev2["open"]
+        is_prev_small_body = abs(prev["close"] - prev["open"]) < abs(prev2["close"] - prev2["open"]) * 0.5
+        is_last_bullish = last["close"] > last["open"]
+        last_close_above_mid_prev2 = last["close"] > (prev2["open"] + prev2["close"]) / 2
+        if is_prev2_bearish and is_prev_small_body and is_last_bullish and last_close_above_mid_prev2:
+            patterns.append("Morning Star")
+
+    # Evening Star (3 candle pattern, bearish reversal)
+    if prev2 is not None:
+        is_prev2_bullish = prev2["close"] > prev2["open"]
+        is_prev_small_body = abs(prev["close"] - prev["open"]) < abs(prev2["close"] - prev2["open"]) * 0.5
+        is_last_bearish = last["close"] < last["open"]
+        last_close_below_mid_prev2 = last["close"] < (prev2["open"] + prev2["close"]) / 2
+        if is_prev2_bullish and is_prev_small_body and is_last_bearish and last_close_below_mid_prev2:
+            patterns.append("Evening Star")
+
+    # Tweezer Top (two candles with equal highs at top, bearish reversal)
+    if prev["high"] == last["high"] and prev["close"] > prev["open"] and last["close"] < last["open"]:
+        patterns.append("Tweezer Top")
+
+    # Tweezer Bottom (two candles with equal lows at bottom, bullish reversal)
+    if prev["low"] == last["low"] and prev["close"] < prev["open"] and last["close"] > last["open"]:
+        patterns.append("Tweezer Bottom")
 
     return patterns
 
 async def send_chart_with_pattern(context):
-    candles = fetch_twelvedata("XAU/USD", interval="5m", count=50)
+    candles = fetch_twelvedata("XAU/USD", interval="5min", count=50)
     if candles is None:
         await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD untuk chart.")
         return
@@ -91,7 +144,7 @@ async def send_chart_with_pattern(context):
         df.tail(50),
         type='candle',
         style='charles',
-        title="XAU/USD 5m Chart",
+        title="XAU/USD 5min Chart",
         ylabel='Price',
         addplot=ap,
         returnfig=True
@@ -102,7 +155,7 @@ async def send_chart_with_pattern(context):
     buf.seek(0)
     plt.close()
 
-    caption = "📉 Chart XAU/USD 5m"
+    caption = "📉 Chart XAU/USD 5min"
     if patterns:
         caption += "\n🔍 Ditemukan pola: " + ", ".join(patterns)
     else:
@@ -137,7 +190,7 @@ async def main():
     application.add_handler(MessageHandler(filters.ALL, ignore_bot_messages))
     application.add_error_handler(error_handler)
 
-    # Cek tiap menit, jika menit == 0 kirim chart 5m
+    # Cek tiap menit, jika menit == 0 kirim chart 5min
     job_queue.run_repeating(send_chart_if_on_hour, interval=60, first=0)
 
     await application.run_polling()
@@ -151,5 +204,4 @@ if __name__ == '__main__':
         pass
 
     loop = asyncio.get_event_loop()
-    loop.create_task(main())
-    loop.run_forever()
+    loop.run_until_complete(main())
