@@ -1,0 +1,17 @@
+name: Deploy to Railway
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: railway/github-action@v1
+        with:
+          projectSlug: your-project-slug
+          environment: staging  # Ubah menjadi "staging"
+          token: ${{ secrets.RAILWAY_TOKEN }}
