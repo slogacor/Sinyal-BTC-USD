@@ -53,17 +53,26 @@ def signal(update, context):
 
     try:
         sig = get_scalping_signal()
+        if 'error' in sig:
+            update.message.reply_text(f"Error sinyal: {sig['error']}")
+            return
+
         msg = f"""
 🔍 SINYAL TERBARU - XAU/USD
 🕒 Waktu: {get_current_time_str()}
 💰 Harga: ${sig['price']}
-📊 RSI(14): {sig['rsi']} 
+📊 RSI(9): {sig['rsi']} 
 📉 MACD: {sig['macd']}
+🕯️ Pola Candlestick: {sig.get('pattern', '-')}
 
 🎯 Rekomendasi: {sig['signal']}
 ⚖️ Alasan: {sig['reason']}
 📈 Target Profit: {sig['tp_pips']} pips
 🛑 Stop Loss: {sig['sl_pips']} pips
+📌 Pivot: {sig.get('pivot', '-')}
+📌 Support1: {sig.get('support1', '-')}
+📌 Resistance1: {sig.get('resistance1', '-')}
+
 ⚖️ Risk/Reward: 1 : 3
 """
         update.message.reply_text(msg)
@@ -117,16 +126,25 @@ def auto_signal_job():
 
     try:
         sig = get_scalping_signal()
+        if 'error' in sig:
+            logger.error(f"Error sinyal otomatis: {sig['error']}")
+            return
+
         msg = f"""
 📡 AUTO SIGNAL - XAU/USD
 🕒 Waktu: {get_current_time_str()}
 💰 Harga: ${sig['price']}
-📊 RSI(14): {sig['rsi']}
+📊 RSI(9): {sig['rsi']}
 📉 MACD: {sig['macd']}
+🕯️ Pola Candlestick: {sig.get('pattern', '-')}
+
 🎯 Rekomendasi: {sig['signal']}
 📈 TP: {sig['tp_pips']} pips
 🛑 SL: {sig['sl_pips']} pips
 ⚖️ Alasan: {sig['reason']}
+📌 Pivot: {sig.get('pivot', '-')}
+📌 Support1: {sig.get('support1', '-')}
+📌 Resistance1: {sig.get('resistance1', '-')}
 """
         if GROUP_CHAT_ID:
             bot.send_message(chat_id=GROUP_CHAT_ID, text=msg)
