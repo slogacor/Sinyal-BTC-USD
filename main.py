@@ -7,6 +7,7 @@ import schedule
 import time
 import random
 import logging
+import threading
 
 # --- Konfigurasi Logging ---
 logging.basicConfig(
@@ -20,6 +21,10 @@ from config import BOT_TOKEN, OPENAI_API_KEY, GROUP_CHAT_ID
 
 bot = telegram.Bot(token=BOT_TOKEN)
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
+
+# Variabel global untuk simpan sinyal terbaru dan yang sudah dikirim
+last_signal_result = None
+last_sent_signal = None
 
 # --- Perintah Bot ---
 
@@ -54,25 +59,20 @@ def signal(update, context):
     try:
         sig = get_scalping_signal()
         if 'error' in sig:
-            update.message.reply_text(f"Error sinyal: {sig['error']}")
+            update.message.reply_text(f"Gagal mendapatkan sinyal: {sig['error']}")
             return
 
         msg = f"""
 🔍 SINYAL TERBARU - XAU/USD
 🕒 Waktu: {get_current_time_str()}
 💰 Harga: ${sig['price']}
-📊 RSI(9): {sig['rsi']} 
+📊 RSI(14): {sig['rsi']}
 📉 MACD: {sig['macd']}
-🕯️ Pola Candlestick: {sig.get('pattern', '-')}
 
 🎯 Rekomendasi: {sig['signal']}
 ⚖️ Alasan: {sig['reason']}
 📈 Target Profit: {sig['tp_pips']} pips
 🛑 Stop Loss: {sig['sl_pips']} pips
-📌 Pivot: {sig.get('pivot', '-')}
-📌 Support1: {sig.get('support1', '-')}
-📌 Resistance1: {sig.get('resistance1', '-')}
-
 ⚖️ Risk/Reward: 1 : 3
 """
         update.message.reply_text(msg)
@@ -118,10 +118,12 @@ def tip(update, context):
     update.message.reply_text("💡 TIP HARI INI:\n" + random.choice(tips))
 
 # --- Auto Signal ---
-def auto_signal_job():
-    logger.info("Menjalankan job otomatis (auto_signal_job)...")
+
+def auto_signal_check():
+    """Cek sinyal tiap 5 menit, simpan hasilnya tapi tidak langsung kirim ke grup"""
+    global last_signal_result
     if not is_market_open():
-        logger.info("Market sedang tutup, sinyal otomatis tidak dikirim.")
+        logger.info("Market tutup, skip cek sinyal.")
         return
 
     try:
@@ -130,40 +132,65 @@ def auto_signal_job():
             logger.error(f"Error sinyal otomatis: {sig['error']}")
             return
 
+        last_signal_result = sig
+        logger.info(f"Sinyal diperbarui (disimpan) - Rekomendasi: {sig['signal']} Waktu: {get_current_time_str()}")
+    except Exception as e:
+        logger.error(f"Error cek sinyal otomatis: {e}")
+
+def auto_signal_send():
+    """Kirim sinyal ke grup hanya sekali sejam di menit ke-52"""
+    global last_sent_signal, last_signal_result
+
+    if not is_market_open():
+        logger.info("Market tutup, tidak kirim sinyal.")
+        return
+
+    if last_signal_result is None:
+        logger.info("Belum ada sinyal yang tersedia untuk dikirim.")
+        return
+
+    # Kirim hanya kalau sinyal berubah dari yang terakhir dikirim
+    if last_signal_result != last_sent_signal:
+        sig = last_signal_result
         msg = f"""
-📡 AUTO SIGNAL - XAU/USD
+📡 AUTO SIGNAL (SENT ON 52th minute) - XAU/USD
 🕒 Waktu: {get_current_time_str()}
 💰 Harga: ${sig['price']}
-📊 RSI(9): {sig['rsi']}
+📊 RSI(14): {sig['rsi']}
 📉 MACD: {sig['macd']}
-🕯️ Pola Candlestick: {sig.get('pattern', '-')}
 
 🎯 Rekomendasi: {sig['signal']}
 📈 TP: {sig['tp_pips']} pips
 🛑 SL: {sig['sl_pips']} pips
 ⚖️ Alasan: {sig['reason']}
-📌 Pivot: {sig.get('pivot', '-')}
-📌 Support1: {sig.get('support1', '-')}
-📌 Resistance1: {sig.get('resistance1', '-')}
 """
-        if GROUP_CHAT_ID:
-            bot.send_message(chat_id=GROUP_CHAT_ID, text=msg)
-        else:
-            logger.warning("GROUP_CHAT_ID tidak diset. Tidak mengirim pesan.")
-    except Exception as e:
-        logger.error(f"Error dalam job otomatis: {e}")
+        try:
+            if GROUP_CHAT_ID:
+                bot.send_message(chat_id=GROUP_CHAT_ID, text=msg)
+                last_sent_signal = sig
+                logger.info("Sinyal otomatis berhasil dikirim.")
+            else:
+                logger.warning("GROUP_CHAT_ID tidak diset. Tidak mengirim pesan.")
+        except Exception as e:
+            logger.error(f"Error mengirim sinyal otomatis: {e}")
+    else:
+        logger.info("Sinyal sama dengan yang sudah dikirim, tidak mengirim ulang.")
 
 # --- Scheduler ---
-def job_scheduler():
-    # Setiap jam, di menit ke-52
-    schedule.every().hour.at(":52").do(auto_signal_job)
 
-    logger.info("Scheduler aktif, menunggu waktu eksekusi di menit ke-52 setiap jam.")
+def job_scheduler():
+    # Cek sinyal setiap 5 menit (update sinyal tapi tidak kirim)
+    schedule.every(5).minutes.do(auto_signal_check)
+    # Kirim sinyal ke grup setiap jam di menit ke-52
+    schedule.every().hour.at(":52").do(auto_signal_send)
+
+    logger.info("Scheduler aktif: cek sinyal tiap 5 menit, kirim sinyal tiap jam di menit 52.")
     while True:
         schedule.run_pending()
         time.sleep(1)
 
 # --- Main ---
+
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
@@ -178,9 +205,8 @@ def main():
     print("🤖 Bot siap! Menunggu perintah...")
     updater.start_polling(drop_pending_updates=True)
 
-    # Scheduler berjalan di thread terpisah
-    from threading import Thread
-    scheduler_thread = Thread(target=job_scheduler, daemon=True)
+    # Jalankan scheduler di thread terpisah
+    scheduler_thread = threading.Thread(target=job_scheduler, daemon=True)
     scheduler_thread.start()
 
     updater.idle()
