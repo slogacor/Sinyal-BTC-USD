@@ -19,8 +19,6 @@ logger = logging.getLogger(__name__)
 from config import BOT_TOKEN, OPENAI_API_KEY, GROUP_CHAT_ID
 
 bot = telegram.Bot(token=BOT_TOKEN)
-
-# Inisialisasi client OpenAI
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 # --- Perintah Bot ---
@@ -112,22 +110,37 @@ def tip(update, context):
 
 # --- Auto Signal ---
 def auto_signal_job():
-    logger.info("Menjalankan job otomatis...")
+    logger.info("Menjalankan job otomatis (auto_signal_job)...")
     if not is_market_open():
+        logger.info("Market sedang tutup, sinyal otomatis tidak dikirim.")
         return
 
     try:
         sig = get_scalping_signal()
-        msg = f"[AUTO] {sig['signal']} XAU/USD | TP: {sig['tp_pips']} pips | SL: {sig['sl_pips']} pips"
+        msg = f"""
+📡 AUTO SIGNAL - XAU/USD
+🕒 Waktu: {get_current_time_str()}
+💰 Harga: ${sig['price']}
+📊 RSI(14): {sig['rsi']}
+📉 MACD: {sig['macd']}
+🎯 Rekomendasi: {sig['signal']}
+📈 TP: {sig['tp_pips']} pips
+🛑 SL: {sig['sl_pips']} pips
+⚖️ Alasan: {sig['reason']}
+"""
         if GROUP_CHAT_ID:
             bot.send_message(chat_id=GROUP_CHAT_ID, text=msg)
+        else:
+            logger.warning("GROUP_CHAT_ID tidak diset. Tidak mengirim pesan.")
     except Exception as e:
         logger.error(f"Error dalam job otomatis: {e}")
 
 # --- Scheduler ---
 def job_scheduler():
-    schedule.every().hour.at(":00").do(auto_signal_job)
+    # Setiap jam, di menit ke-52
+    schedule.every().hour.at(":52").do(auto_signal_job)
 
+    logger.info("Scheduler aktif, menunggu waktu eksekusi di menit ke-52 setiap jam.")
     while True:
         schedule.run_pending()
         time.sleep(1)
@@ -137,7 +150,7 @@ def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Register handlers
+    # Register command handlers
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("harga", harga))
     dp.add_handler(CommandHandler("signal", signal))
@@ -147,12 +160,12 @@ def main():
     print("🤖 Bot siap! Menunggu perintah...")
     updater.start_polling(drop_pending_updates=True)
 
-    # Jalankan scheduler di thread terpisah
+    # Scheduler berjalan di thread terpisah
     from threading import Thread
     scheduler_thread = Thread(target=job_scheduler, daemon=True)
     scheduler_thread.start()
 
-    updater.idle()  # Biar tetap hidup sampai dihentikan
+    updater.idle()
 
 if __name__ == "__main__":
     main()
