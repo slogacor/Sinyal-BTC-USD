@@ -1,6 +1,6 @@
 import telegram
 from telegram.ext import Updater, CommandHandler
-from strategies import get_scalping_signal, get_xauusd_price  # ✅ Pastikan fungsi ini ada di strategies.py
+from strategies import get_scalping_signal, get_xauusd_price
 from utils import is_market_open, get_current_time_str
 import openai
 import schedule
@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 from config import BOT_TOKEN, OPENAI_API_KEY, GROUP_CHAT_ID
 
 bot = telegram.Bot(token=BOT_TOKEN)
-openai.api_key = OPENAI_API_KEY
+
+# Inisialisasi client OpenAI
+client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 # --- Perintah Bot ---
 
@@ -84,11 +86,14 @@ def tanya(update, context):
             return
 
         question = ' '.join(context.args)
-        response = openai.Completion.create(
-            engine="text-davinci-003",
+        logger.info(f"Pertanyaan: {question}")
+
+        response = client.completions.create(
+            model="text-davinci-003",
             prompt=f"Kamu adalah mentor trading profesional. Jelaskan: {question}",
             max_tokens=200
         )
+
         update.message.reply_text(response.choices[0].text.strip())
     except Exception as e:
         logger.error(f"Error di /tanya: {e}")
@@ -140,7 +145,7 @@ def main():
     dp.add_handler(CommandHandler("tip", tip))
 
     print("🤖 Bot siap! Menunggu perintah...")
-    updater.start_polling(drop_pending_updates=True)  # ✅ Membersihkan pesan lama saat restart
+    updater.start_polling(drop_pending_updates=True)
 
     # Jalankan scheduler di thread terpisah
     from threading import Thread
