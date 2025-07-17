@@ -7,14 +7,12 @@ import schedule
 import time
 import random
 
-# --- Import Konfigurasi ---
 from config import BOT_TOKEN, OPENAI_API_KEY, GROUP_CHAT_ID
 
 bot = telegram.Bot(token=BOT_TOKEN)
 openai.api_key = OPENAI_API_KEY
 
 # --- Perintah Bot ---
-
 def start(update, context):
     update.message.reply_text("Halo! Saya adalah mentor trading XAU/USD Anda.")
 
@@ -24,6 +22,10 @@ def harga(update, context):
         return
 
     price = get_xauusd_price()
+    if price is None:
+        update.message.reply_text("Gagal mengambil harga saat ini.")
+        return
+
     update.message.reply_text(f"Harga XAU/USD saat ini: ${price}")
 
 def signal(update, context):
